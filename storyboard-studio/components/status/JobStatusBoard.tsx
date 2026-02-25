@@ -10,6 +10,8 @@ import {
   Sparkles,
   Film,
   PartyPopper,
+  User,
+  MinusCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -21,26 +23,33 @@ type SceneStatus =
   | "COMPLETE"
   | "FAILED";
 
+type CharacterReelStatus = "NONE" | "PENDING" | "GENERATING" | "COMPLETE" | "FAILED";
+
 interface PipelineStep {
   key: string;
   label: string;
   icon: React.ReactNode;
-  state: "pending" | "active" | "complete" | "failed";
+  state: "pending" | "active" | "complete" | "failed" | "skipped";
 }
 
 interface JobStatusBoardProps {
   status: SceneStatus;
+  reelStatus?: CharacterReelStatus;
   className?: string;
 }
 
 const STEP_DEFINITIONS = [
   { key: "uploading", label: "Uploading assets", icon: Upload },
   { key: "uprendering", label: "Uprendering sketch", icon: Sparkles },
+  { key: "character_reel", label: "Generating character reel", icon: User },
   { key: "generating_video", label: "Generating video", icon: Film },
   { key: "complete", label: "Complete", icon: PartyPopper },
 ] as const;
 
-function getStepStates(status: SceneStatus): PipelineStep[] {
+function getStepStates(
+  status: SceneStatus,
+  reelStatus?: CharacterReelStatus
+): PipelineStep[] {
   const statusOrder: SceneStatus[] = [
     "UPLOADING",
     "UPRENDERING",
@@ -53,12 +62,78 @@ function getStepStates(status: SceneStatus): PipelineStep[] {
 
   return STEP_DEFINITIONS.map((def, i) => {
     const Icon = def.icon;
+
+    // Handle the character reel step specially
+    if (def.key === "character_reel") {
+      // No reference images uploaded — skip this step entirely
+      if (!reelStatus || reelStatus === "NONE") {
+        return {
+          key: def.key,
+          label: def.label,
+          icon: <MinusCircle className="h-4 w-4" />,
+          state: "skipped" as const,
+        };
+      }
+
+      // Reel was cached / already complete — show as complete immediately
+      if (reelStatus === "COMPLETE") {
+        return {
+          key: def.key,
+          label: def.label,
+          icon: <Icon className="h-4 w-4" />,
+          state: "complete" as const,
+        };
+      }
+
+      // Reel is generating
+      if (reelStatus === "GENERATING") {
+        // If scene status has already passed uprendering, show active
+        const isUprendered = currentIndex >= 1; // past UPRENDERING
+        return {
+          key: def.key,
+          label: def.label,
+          icon: <Icon className="h-4 w-4" />,
+          state: isUprendered ? "active" as const : "pending" as const,
+        };
+      }
+
+      // Reel pending or failed
+      if (reelStatus === "FAILED") {
+        return {
+          key: def.key,
+          label: def.label,
+          icon: <Icon className="h-4 w-4" />,
+          state: "failed" as const,
+        };
+      }
+
+      // PENDING — not yet started
+      return {
+        key: def.key,
+        label: def.label,
+        icon: <Icon className="h-4 w-4" />,
+        state: "pending" as const,
+      };
+    }
+
+    // For non-reel steps, map indices accounting for the reel step insertion
+    // Steps: 0=uploading, 1=uprendering, 2=character_reel, 3=generating_video, 4=complete
+    // Status order indices: 0=UPLOADING, 1=UPRENDERING, 2=GENERATING_VIDEO, 3=COMPLETE
+    const statusIndex =
+      i < 2 ? i : // uploading (0), uprendering (1) → direct map
+      i === 3 ? 2 : // generating_video → statusOrder[2]
+      i === 4 ? 3 : // complete → statusOrder[3]
+      -1;
+
     let state: PipelineStep["state"] = "pending";
 
     if (isFailed) {
-      if (i < currentIndex) {
+      if (statusIndex < currentIndex) {
         state = "complete";
-      } else if (i === currentIndex || (currentIndex === -1 && i === 0)) {
+      } else if (
+        statusIndex === currentIndex ||
+        (currentIndex === -1 && statusIndex === 0)
+      ) {
         state = "failed";
       } else {
         state = "pending";
@@ -66,9 +141,9 @@ function getStepStates(status: SceneStatus): PipelineStep[] {
     } else if (currentIndex === -1) {
       // PENDING status — nothing started yet
       state = "pending";
-    } else if (i < currentIndex) {
+    } else if (statusIndex < currentIndex) {
       state = "complete";
-    } else if (i === currentIndex) {
+    } else if (statusIndex === currentIndex) {
       state = status === "COMPLETE" ? "complete" : "active";
     } else {
       state = "pending";
@@ -83,8 +158,8 @@ function getStepStates(status: SceneStatus): PipelineStep[] {
   });
 }
 
-export function JobStatusBoard({ status, className }: JobStatusBoardProps) {
-  const steps = useMemo(() => getStepStates(status), [status]);
+export function JobStatusBoard({ status, reelStatus, className }: JobStatusBoardProps) {
+  const steps = useMemo(() => getStepStates(status, reelStatus), [status, reelStatus]);
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -100,6 +175,7 @@ export function JobStatusBoard({ status, className }: JobStatusBoardProps) {
                 "flex items-center gap-3 rounded-xl px-4 py-3 transition-all duration-300",
                 {
                   "bg-gray-800/50 text-gray-500": step.state === "pending",
+                  "bg-gray-800/30 text-gray-600 opacity-60": step.state === "skipped",
                   "bg-indigo-500/15 text-indigo-300 ring-1 ring-indigo-500/30":
                     step.state === "active",
                   "bg-emerald-500/10 text-emerald-400":
@@ -122,6 +198,9 @@ export function JobStatusBoard({ status, className }: JobStatusBoardProps) {
                 {step.state === "pending" && (
                   <Circle className="h-5 w-5 text-gray-600" />
                 )}
+                {step.state === "skipped" && (
+                  <MinusCircle className="h-5 w-5 text-gray-600" />
+                )}
               </div>
 
               {/* Step icon */}
@@ -131,6 +210,7 @@ export function JobStatusBoard({ status, className }: JobStatusBoardProps) {
               <span
                 className={cn("text-sm font-medium", {
                   "text-gray-500": step.state === "pending",
+                  "text-gray-600 line-through": step.state === "skipped",
                   "text-indigo-200": step.state === "active",
                   "text-emerald-300": step.state === "complete",
                   "text-red-300": step.state === "failed",

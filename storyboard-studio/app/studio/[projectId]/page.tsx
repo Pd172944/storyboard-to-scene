@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Film, Loader2 } from "lucide-react";
+import { ArrowLeft, Film, Loader2, RefreshCw, User } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@/server/routers/_app";
@@ -10,6 +10,8 @@ import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import type { StoryboardCanvasHandle } from "@/components/canvas/StoryboardCanvas";
 import { SceneCard, type SceneFormData } from "@/components/scene/SceneCard";
+import { CharacterRefUpload } from "@/components/scene/CharacterRefUpload";
+import { cn } from "@/lib/utils";
 
 const StoryboardCanvas = dynamic(
   () => import("@/components/canvas/StoryboardCanvas").then((mod) => mod.StoryboardCanvas),
@@ -38,6 +40,8 @@ type SceneStatus =
   | "GENERATING_VIDEO"
   | "COMPLETE"
   | "FAILED";
+
+type CharacterReelStatus = "NONE" | "PENDING" | "GENERATING" | "COMPLETE" | "FAILED";
 
 export default function StudioPage() {
   const params = useParams();
@@ -69,45 +73,21 @@ export default function StudioPage() {
 
   const submitSceneMutation = trpc.scene.submitScene.useMutation();
 
-  // Upload reference image to fal via presigned URL flow
-  const uploadReferenceImage = useCallback(
-    async (file: File): Promise<string> => {
-      // Step 1: Get a presigned upload URL from our proxy
-      const initiateResp = await fetch("/api/fal/storage/upload/initiate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_name: file.name,
-          content_type: file.type,
-        }),
-      });
-
-      if (!initiateResp.ok) {
-        const errBody = await initiateResp.text();
-        console.error("Initiate upload failed:", errBody);
-        throw new Error("Failed to initiate upload");
-      }
-
-      const { upload_url, file_url } = (await initiateResp.json()) as {
-        upload_url: string;
-        file_url: string;
-      };
-
-      // Step 2: PUT the file directly to the presigned URL
-      const uploadResp = await fetch(upload_url, {
-        method: "PUT",
-        headers: { "Content-Type": file.type },
-        body: file,
-      });
-
-      if (!uploadResp.ok) {
-        throw new Error("Failed to upload file to storage");
-      }
-
-      return file_url;
-    },
-    []
+  // Poll character reel status every 4 seconds while generating
+  const reelStatusQuery = trpc.project.getCharacterReelStatus.useQuery(
+    { projectId },
+    {
+      enabled: !!projectId,
+      refetchInterval: (query) => {
+        const status = query.state.data?.status;
+        if (status === "GENERATING") return 4000;
+        return false;
+      },
+    }
   );
+
+  const characterReelStatus = (reelStatusQuery.data?.status ?? "NONE") as CharacterReelStatus;
+  const characterRefUrls = reelStatusQuery.data?.refImageUrls ?? [];
 
   // Upload a data URL (canvas export) to fal storage via presigned URL
   const uploadSketch = useCallback(
@@ -168,18 +148,12 @@ export default function StudioPage() {
         // 2. Upload sketch to fal storage via proxy
         const sketchUrl = await uploadSketch(sketchDataUrl);
 
-        // 3. Upload reference image to fal storage via proxy
-        const referenceImageUrl = await uploadReferenceImage(
-          data.referenceFile
-        );
-
-        // 4. Submit scene via tRPC (URLs only, no base64)
+        // 3. Submit scene via tRPC — reference image comes from project character refs (server-side)
         const result = await submitSceneMutation.mutateAsync({
           projectId,
           title: data.title,
           motionPrompt: data.motionPrompt,
           sketchDataUrl: sketchUrl,
-          referenceImageUrl,
         });
 
         setActiveSceneId(result.sceneId);
@@ -189,7 +163,7 @@ export default function StudioPage() {
         setIsSubmitting(false);
       }
     },
-    [projectId, submitSceneMutation, uploadReferenceImage, uploadSketch]
+    [projectId, submitSceneMutation, uploadSketch]
   );
 
   // Auto-select the latest active scene on page load
@@ -255,9 +229,43 @@ export default function StudioPage() {
 
       {/* Main layout */}
       <div className="flex h-[calc(100vh-57px)]">
-        {/* Left panel: Canvas + Scene Card */}
+        {/* Left panel: Canvas + Character Panel + Scene Card */}
         <div className="flex w-[60%] flex-col gap-4 overflow-y-auto border-r border-gray-800 p-6">
           <StoryboardCanvas ref={canvasRef} />
+
+          {/* Character reference panel */}
+          <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <User className="h-4 w-4 text-indigo-400" />
+                <h3 className="text-sm font-semibold text-gray-300">Character Identity</h3>
+              </div>
+              {characterReelStatus !== "NONE" && (
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                    {
+                      "bg-amber-500/15 text-amber-400": characterReelStatus === "PENDING",
+                      "bg-indigo-500/15 text-indigo-400": characterReelStatus === "GENERATING",
+                      "bg-emerald-500/15 text-emerald-400": characterReelStatus === "COMPLETE",
+                      "bg-red-500/15 text-red-400": characterReelStatus === "FAILED",
+                    }
+                  )}
+                >
+                  {characterReelStatus === "PENDING" && "Pending"}
+                  {characterReelStatus === "GENERATING" && "Generating reel…"}
+                  {characterReelStatus === "COMPLETE" && "Reel ready"}
+                  {characterReelStatus === "FAILED" && "Reel failed"}
+                </span>
+              )}
+            </div>
+            <CharacterRefUpload
+              projectId={projectId}
+              initialRefUrls={characterRefUrls}
+              initialReelStatus={characterReelStatus}
+            />
+          </div>
+
           <SceneCard onSubmit={handleSubmit} isSubmitting={isSubmitting} />
         </div>
 
@@ -266,7 +274,7 @@ export default function StudioPage() {
           {/* Show status board when a job is active */}
           {activeSceneId && sceneStatus && (
             <div className="space-y-6">
-              <JobStatusBoard status={sceneStatus} />
+              <JobStatusBoard status={sceneStatus} reelStatus={characterReelStatus} />
 
               {/* Show uprendered image once available */}
               {uprenderUrl && (

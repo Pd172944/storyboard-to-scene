@@ -27,17 +27,22 @@ export interface KlingStatusResult {
  *
  * @param imageUrl - URL of the photorealistic first frame
  * @param motionPrompt - text prompt describing motion and action
+ * @param referenceVideoUrl - optional character reel URL for identity consistency
  * @returns The request_id for tracking this job
  */
 export async function submitKlingJob(
   imageUrl: string,
-  motionPrompt: string
+  motionPrompt: string,
+  referenceVideoUrl?: string
 ): Promise<string> {
   const { request_id } = await fal.queue.submit(KLING_MODEL_ID, {
     input: {
       image_url: imageUrl,
       prompt: motionPrompt,
       duration: "5",
+      ...(referenceVideoUrl && {
+        reference_video_url: referenceVideoUrl,
+      }),
     } as KlingInput,
   });
 

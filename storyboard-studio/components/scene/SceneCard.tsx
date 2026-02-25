@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { CharacterRefUpload } from "@/components/scene/CharacterRefUpload";
 
 const sceneFormSchema = z.object({
   title: z.string().min(1, "Scene title is required").max(200),
@@ -18,7 +17,6 @@ const sceneFormSchema = z.object({
 export interface SceneFormData {
   title: string;
   motionPrompt: string;
-  referenceFile: File;
 }
 
 interface SceneCardProps {
@@ -30,28 +28,7 @@ interface SceneCardProps {
 export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps) {
   const [title, setTitle] = useState("");
   const [motionPrompt, setMotionPrompt] = useState("");
-  const [referenceFile, setReferenceFile] = useState<File | null>(null);
-  const [referencePreview, setReferencePreview] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-
-  const handleRefUpload = useCallback((file: File) => {
-    setReferenceFile(file);
-    const url = URL.createObjectURL(file);
-    setReferencePreview(url);
-    setErrors((prev) => {
-      const next = { ...prev };
-      delete next.referenceFile;
-      return next;
-    });
-  }, []);
-
-  const handleRefRemove = useCallback(() => {
-    setReferenceFile(null);
-    if (referencePreview) {
-      URL.revokeObjectURL(referencePreview);
-    }
-    setReferencePreview(null);
-  }, [referencePreview]);
 
   const handleSubmit = useCallback(
     async (e: FormEvent) => {
@@ -72,19 +49,12 @@ export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps)
         return;
       }
 
-      // Validate reference image
-      if (!referenceFile) {
-        setErrors({ referenceFile: "Character reference image is required" });
-        return;
-      }
-
       await onSubmit({
         title: result.data.title,
         motionPrompt: result.data.motionPrompt,
-        referenceFile,
       });
     },
-    [title, motionPrompt, referenceFile, onSubmit]
+    [title, motionPrompt, onSubmit]
   );
 
   return (
@@ -122,16 +92,6 @@ export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps)
               <p className="text-xs text-red-400">{errors.motionPrompt}</p>
             )}
           </div>
-
-          <CharacterRefUpload
-            onUpload={handleRefUpload}
-            onRemove={handleRefRemove}
-            previewUrl={referencePreview}
-            disabled={isSubmitting}
-          />
-          {errors.referenceFile && (
-            <p className="text-xs text-red-400">{errors.referenceFile}</p>
-          )}
 
           <Button
             type="submit"

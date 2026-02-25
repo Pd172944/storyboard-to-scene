@@ -13,6 +13,20 @@ model Project {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   scenes    Scene[]
+
+  // Phase 2 additions
+  characterRefUrls    String[]            @default([])   // fal storage URLs, up to 3
+  characterReelUrl    String?                             // Wan 2.6 R2V output video URL
+  characterReelStatus CharacterReelStatus @default(NONE)
+  wanRequestId        String?                             // in-flight Wan job request_id
+}
+
+enum CharacterReelStatus {
+  NONE       // no refs uploaded yet
+  PENDING    // refs uploaded, reel not yet generated
+  GENERATING // Wan R2V job in flight
+  COMPLETE   // reel ready, Kling will use it
+  FAILED     // Wan job failed — scenes generate without reel
 }
 
 model Scene {

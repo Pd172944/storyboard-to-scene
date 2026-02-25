@@ -49,3 +49,36 @@ export async function getJobState(
 export async function deleteJobState(sceneId: string): Promise<void> {
   await redis.del(`${JOB_STATE_PREFIX}${sceneId}`);
 }
+
+// ---------------------------------------------------------------------------
+// Character reel cache — keyed by projectId
+// TTL: 7 days (604800 seconds)
+// This avoids regenerating the reel on every scene submission
+// ---------------------------------------------------------------------------
+
+const CHARACTER_REEL_PREFIX = "character-reel:";
+const CHARACTER_REEL_TTL = 604800; // 7 days
+
+export async function setCharacterReelCache(
+  projectId: string,
+  reelUrl: string
+): Promise<void> {
+  await redis.set(
+    `${CHARACTER_REEL_PREFIX}${projectId}`,
+    reelUrl,
+    { ex: CHARACTER_REEL_TTL }
+  );
+}
+
+export async function getCharacterReelCache(
+  projectId: string
+): Promise<string | null> {
+  const raw = await redis.get<string>(`${CHARACTER_REEL_PREFIX}${projectId}`);
+  return raw ?? null;
+}
+
+export async function invalidateCharacterReelCache(
+  projectId: string
+): Promise<void> {
+  await redis.del(`${CHARACTER_REEL_PREFIX}${projectId}`);
+}
