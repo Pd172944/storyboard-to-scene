@@ -1,11 +1,20 @@
 import { fal } from "@/lib/fal/client";
 
-const KLING_MODEL_ID = "fal-ai/kling-video/v2.6/pro/image-to-video";
+// Kling O3 Pro reference-to-video — supports `elements` for character identity
+export const KLING_MODEL_ID = "fal-ai/kling-video/o3/pro/reference-to-video";
+
+export interface KlingElement {
+  frontal_image_url: string;
+  reference_image_urls: string[];
+}
 
 export interface KlingInput {
-  image_url: string;
+  start_image_url: string;
   prompt: string;
   duration: string;
+  elements?: KlingElement[];
+  aspect_ratio?: string;
+  generate_audio?: boolean;
 }
 
 export interface KlingOutput {
@@ -23,26 +32,49 @@ export interface KlingStatusResult {
 }
 
 /**
- * Submit an image-to-video job to Kling 2.6 Pro via fal's async queue.
+ * Submit an image-to-video job to Kling O3 Pro reference-to-video.
  *
- * @param imageUrl - URL of the photorealistic first frame
+ * Uses `elements` to pass character reference images directly,
+ * referenced in the prompt as @Element1.
+ *
+ * @param imageUrl - URL of the photorealistic first frame (start_image_url)
  * @param motionPrompt - text prompt describing motion and action
- * @param referenceVideoUrl - optional character reel URL for identity consistency
+ * @param characterRefUrls - optional array of character reference image URLs (1–3)
  * @returns The request_id for tracking this job
  */
 export async function submitKlingJob(
   imageUrl: string,
   motionPrompt: string,
-  referenceVideoUrl?: string
+  characterRefUrls?: string[]
 ): Promise<string> {
+  // Build elements array if character references are provided
+  let elements: KlingElement[] | undefined;
+  let prompt = motionPrompt;
+
+  if (characterRefUrls && characterRefUrls.length > 0) {
+    // First image is the frontal/primary reference, rest are supplementary
+    const [frontalUrl, ...restUrls] = characterRefUrls;
+    elements = [
+      {
+        frontal_image_url: frontalUrl,
+        reference_image_urls:
+          restUrls.length > 0 ? restUrls : [frontalUrl],
+      },
+    ];
+    // Prepend @Element1 to prompt so Kling uses the character identity
+    if (!prompt.includes("@Element1")) {
+      prompt = `@Element1 ${prompt}`;
+    }
+  }
+
   const { request_id } = await fal.queue.submit(KLING_MODEL_ID, {
     input: {
-      image_url: imageUrl,
-      prompt: motionPrompt,
+      start_image_url: imageUrl,
+      prompt,
       duration: "5",
-      ...(referenceVideoUrl && {
-        reference_video_url: referenceVideoUrl,
-      }),
+      aspect_ratio: "16:9",
+      generate_audio: false,
+      ...(elements && { elements }),
     } as KlingInput,
   });
 

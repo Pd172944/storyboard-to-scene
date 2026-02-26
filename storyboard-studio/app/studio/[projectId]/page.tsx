@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Film, Loader2, RefreshCw, User } from "lucide-react";
+import { ArrowLeft, Film, Loader2, RefreshCw, Trash2, User } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@/server/routers/_app";
@@ -72,6 +72,14 @@ export default function StudioPage() {
   );
 
   const submitSceneMutation = trpc.scene.submitScene.useMutation();
+  const deleteSceneMutation = trpc.scene.deleteScene.useMutation({
+    onSuccess: (_data, variables) => {
+      if (activeSceneId === variables.sceneId) {
+        setActiveSceneId(null);
+      }
+      projectQuery.refetch();
+    },
+  });
 
   // Poll character reel status every 4 seconds while generating
   const reelStatusQuery = trpc.project.getCharacterReelStatus.useQuery(
@@ -240,22 +248,11 @@ export default function StudioPage() {
                 <User className="h-4 w-4 text-indigo-400" />
                 <h3 className="text-sm font-semibold text-gray-300">Character Identity</h3>
               </div>
-              {characterReelStatus !== "NONE" && (
+              {characterReelStatus === "COMPLETE" && (
                 <span
-                  className={cn(
-                    "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                    {
-                      "bg-amber-500/15 text-amber-400": characterReelStatus === "PENDING",
-                      "bg-indigo-500/15 text-indigo-400": characterReelStatus === "GENERATING",
-                      "bg-emerald-500/15 text-emerald-400": characterReelStatus === "COMPLETE",
-                      "bg-red-500/15 text-red-400": characterReelStatus === "FAILED",
-                    }
-                  )}
+                  className="rounded-full px-2 py-0.5 text-[10px] font-medium bg-emerald-500/15 text-emerald-400"
                 >
-                  {characterReelStatus === "PENDING" && "Pending"}
-                  {characterReelStatus === "GENERATING" && "Generating reel…"}
-                  {characterReelStatus === "COMPLETE" && "Reel ready"}
-                  {characterReelStatus === "FAILED" && "Reel failed"}
+                  Refs ready
                 </span>
               )}
             </div>
@@ -274,7 +271,7 @@ export default function StudioPage() {
           {/* Show status board when a job is active */}
           {activeSceneId && sceneStatus && (
             <div className="space-y-6">
-              <JobStatusBoard status={sceneStatus} reelStatus={characterReelStatus} />
+              <JobStatusBoard status={sceneStatus} />
 
               {/* Show uprendered image once available */}
               {uprenderUrl && (
@@ -305,6 +302,24 @@ export default function StudioPage() {
                   </p>
                 </div>
               )}
+
+              {/* Delete active scene */}
+              {(sceneStatus === "COMPLETE" || sceneStatus === "FAILED") && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                  onClick={() => {
+                    if (confirm("Delete this scene? This cannot be undone.")) {
+                      deleteSceneMutation.mutate({ sceneId: activeSceneId! });
+                    }
+                  }}
+                  disabled={deleteSceneMutation.isPending}
+                >
+                  <Trash2 className="mr-2 h-3.5 w-3.5" />
+                  Delete Scene
+                </Button>
+              )}
             </div>
           )}
 
@@ -331,16 +346,34 @@ export default function StudioPage() {
                   .map((scene: ProjectScene) => (
                     <div
                       key={scene.id}
-                      className="cursor-pointer rounded-lg border border-gray-700 bg-gray-900 p-3 transition-colors hover:border-gray-600"
+                      className="group relative cursor-pointer rounded-lg border border-gray-700 bg-gray-900 p-3 transition-colors hover:border-gray-600"
                       onClick={() => setActiveSceneId(scene.id)}
                     >
-                      <p className="text-sm font-medium text-gray-200">
-                        {scene.title}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        {scene.status} •{" "}
-                        {new Date(scene.createdAt).toLocaleTimeString()}
-                      </p>
+                      <div className="flex items-start justify-between">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-200">
+                            {scene.title}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {scene.status} •{" "}
+                            {new Date(scene.createdAt).toLocaleTimeString()}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 shrink-0 gap-1 px-2 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm("Delete this scene? This cannot be undone.")) {
+                              deleteSceneMutation.mutate({ sceneId: scene.id });
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span className="text-xs">Delete</span>
+                        </Button>
+                      </div>
                     </div>
                   ))}
               </div>

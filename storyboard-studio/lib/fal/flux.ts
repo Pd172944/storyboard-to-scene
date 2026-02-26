@@ -23,13 +23,11 @@ const POLL_INTERVAL_MS = 3000;
  * Uprender a rough sketch into a photorealistic frame using Flux Kontext.
  *
  * @param sketchUrl - fal CDN URL of the uploaded sketch
- * @param referenceImageUrl - fal CDN URL of the character reference image
  * @param scenePrompt - text prompt describing the scene and motion
  * @returns URL of the generated photorealistic image
  */
 export async function upsampleSketch(
   sketchUrl: string,
-  referenceImageUrl: string,
   scenePrompt: string
 ): Promise<string> {
   const prompt = `Transform this rough sketch into a high quality, photorealistic scene. Scene description: ${scenePrompt}. Maintain the exact composition, poses, and layout from the sketch. Make it look like a professional photograph with natural lighting and realistic textures.`;

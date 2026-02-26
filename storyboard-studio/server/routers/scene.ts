@@ -4,8 +4,7 @@ import { prisma } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
 import { getJobState } from "@/lib/redis";
 import { fal } from "@/lib/fal/client";
-
-const KLING_MODEL_ID = "fal-ai/kling-video/v2.6/pro/image-to-video";
+import { KLING_MODEL_ID } from "@/lib/fal/kling";
 
 export const sceneRouter = router({
   /**
@@ -19,27 +18,15 @@ export const sceneRouter = router({
         title: z.string().min(1, "Scene title is required").max(200),
         motionPrompt: z.string().min(1, "Motion prompt is required").max(2000),
         sketchDataUrl: z.string().min(1, "Sketch is required"),
-        referenceImageUrl: z.string().url("Invalid reference image URL").optional(),
       })
     )
     .mutation(async ({ input }) => {
-      // Resolve reference image: use explicit URL or fall back to project's first character ref
-      let referenceImageUrl = input.referenceImageUrl;
-      if (!referenceImageUrl) {
-        const project = await prisma.project.findUnique({
-          where: { id: input.projectId },
-          select: { characterRefUrls: true },
-        });
-        referenceImageUrl = project?.characterRefUrls?.[0] ?? undefined;
-      }
-
       const scene = await prisma.scene.create({
         data: {
           projectId: input.projectId,
           title: input.title,
           motionPrompt: input.motionPrompt,
           sketchDataUrl: input.sketchDataUrl,
-          referenceImageUrl: referenceImageUrl ?? null,
           status: "PENDING",
         },
       });
@@ -49,7 +36,6 @@ export const sceneRouter = router({
         data: {
           sceneId: scene.id,
           sketchDataUrl: input.sketchDataUrl,
-          referenceImageUrl: referenceImageUrl ?? "",
           motionPrompt: input.motionPrompt,
           projectId: input.projectId,
         },
@@ -113,6 +99,37 @@ export const sceneRouter = router({
       await prisma.scene.update({
         where: { id: input.sceneId },
         data: { status: "FAILED" },
+      });
+
+      return { success: true };
+    }),
+
+  /**
+   * Delete a scene.
+   */
+  deleteScene: publicProcedure
+    .input(z.object({ sceneId: z.string().cuid() }))
+    .mutation(async ({ input }) => {
+      // Cancel any running Inngest workflow
+      await inngest.send({
+        name: "studio/scene.cancel",
+        data: { sceneId: input.sceneId },
+      });
+
+      // Try to cancel any active fal job
+      const jobState = await getJobState(input.sceneId);
+      if (jobState?.klingRequestId) {
+        try {
+          await fal.queue.cancel(KLING_MODEL_ID, {
+            requestId: jobState.klingRequestId,
+          });
+        } catch {
+          // Ignore — job may already be done
+        }
+      }
+
+      await prisma.scene.delete({
+        where: { id: input.sceneId },
       });
 
       return { success: true };

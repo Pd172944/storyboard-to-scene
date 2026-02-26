@@ -77,12 +77,12 @@ export const projectRouter = router({
       })
     )
     .mutation(async ({ input }) => {
-      // 1. Update Project.characterRefUrls and reset reel state
+      // 1. Update Project.characterRefUrls — refs are immediately ready for Kling O3
       await prisma.project.update({
         where: { id: input.projectId },
         data: {
           characterRefUrls: input.referenceImageUrls,
-          characterReelStatus: "PENDING",
+          characterReelStatus: "COMPLETE",
           characterReelUrl: null,
           wanRequestId: null,
         },
