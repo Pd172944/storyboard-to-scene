@@ -8,7 +8,7 @@ import {
 } from "@/lib/redis";
 import { upsampleSketch } from "@/lib/fal/flux";
 import { submitKlingJob, waitForKlingCompletion } from "@/lib/fal/kling";
-import { submitWanR2VJob } from "@/lib/fal/wan";
+import { submitWanR2VJob, waitForWanCompletion } from "@/lib/fal/wan";
 
 interface GenerateSceneEventData {
   sceneId: string;
@@ -62,18 +62,21 @@ export const generateScene = inngest.createFunction(
     });
 
     // Step 2: Ensure character reel is available (or null if not applicable)
-    const reelUrl = await step.run("ensure-character-reel", async () => {
+    const finalReelUrl = await step.run("ensure-character-reel", async () => {
+      const projectId = event.data.projectId;
+
       // 1. Check Redis cache first
-      const cached = await getCharacterReelCache(event.data.projectId);
+      const cached = await getCharacterReelCache(projectId);
       if (cached) return cached;
 
       // 2. Check Postgres
       const project = await prisma.project.findUnique({
-        where: { id: event.data.projectId },
+        where: { id: projectId },
         select: {
           characterReelUrl: true,
           characterReelStatus: true,
           characterRefUrls: true,
+          wanRequestId: true,
         },
       });
 
@@ -82,10 +85,7 @@ export const generateScene = inngest.createFunction(
         project?.characterReelStatus === "COMPLETE" &&
         project.characterReelUrl
       ) {
-        await setCharacterReelCache(
-          event.data.projectId,
-          project.characterReelUrl
-        );
+        await setCharacterReelCache(projectId, project.characterReelUrl);
         return project.characterReelUrl;
       }
 
@@ -93,63 +93,70 @@ export const generateScene = inngest.createFunction(
       if (!project?.characterRefUrls?.length) return null;
 
       // 5. If reel is currently GENERATING (another scene submitted simultaneously),
-      //    return null — we will waitForEvent below
-      if (project.characterReelStatus === "GENERATING") {
-        return null; // handled by waitForEvent below
+      //    poll the existing job instead of submitting a duplicate
+      if (
+        project.characterReelStatus === "GENERATING" &&
+        project.wanRequestId
+      ) {
+        try {
+          const reelUrl = await waitForWanCompletion(project.wanRequestId);
+          // Persist result
+          await prisma.project.update({
+            where: { id: projectId },
+            data: {
+              characterReelUrl: reelUrl,
+              characterReelStatus: "COMPLETE",
+              wanRequestId: null,
+            },
+          });
+          await setCharacterReelCache(projectId, reelUrl);
+          return reelUrl;
+        } catch (err) {
+          console.error("Wan R2V poll failed for existing job:", err);
+          await prisma.project.update({
+            where: { id: projectId },
+            data: { characterReelStatus: "FAILED", wanRequestId: null },
+          });
+          return null;
+        }
       }
 
-      // 6. Submit Wan R2V job
+      // 6. Submit Wan R2V job and poll until complete
       await prisma.project.update({
-        where: { id: event.data.projectId },
+        where: { id: projectId },
         data: { characterReelStatus: "GENERATING" },
       });
 
-      const webhookUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/wan`;
-      const requestId = await submitWanR2VJob(
-        project.characterRefUrls,
-        webhookUrl
-      );
+      const requestId = await submitWanR2VJob(project.characterRefUrls);
 
       await prisma.project.update({
-        where: { id: event.data.projectId },
+        where: { id: projectId },
         data: { wanRequestId: requestId },
       });
 
-      return null; // will be resolved by waitForEvent
-    });
-
-    // Step 2b: If reel is not yet available but was submitted, wait for Wan completion
-    let finalReelUrl = reelUrl;
-    if (!reelUrl) {
-      // Check if we need to wait for an in-flight Wan job
-      const project = await step.run("check-wan-status", async () => {
-        return prisma.project.findUnique({
-          where: { id: event.data.projectId },
-          select: { characterReelStatus: true, characterReelUrl: true },
+      try {
+        const reelUrl = await waitForWanCompletion(requestId);
+        // Persist result
+        await prisma.project.update({
+          where: { id: projectId },
+          data: {
+            characterReelUrl: reelUrl,
+            characterReelStatus: "COMPLETE",
+            wanRequestId: null,
+          },
         });
-      });
-
-      if (project?.characterReelStatus === "GENERATING") {
-        const wanEvent = await step.waitForEvent("wait-for-wan", {
-          event: "studio/wan.complete",
-          timeout: "8m",
-          if: `async.data.projectId == '${event.data.projectId}'`,
+        await setCharacterReelCache(projectId, reelUrl);
+        return reelUrl;
+      } catch (err) {
+        // Wan timed out or failed — mark failed but don't block scene generation
+        console.error("Wan R2V generation failed:", err);
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { characterReelStatus: "FAILED", wanRequestId: null },
         });
-
-        if (wanEvent) {
-          finalReelUrl = wanEvent.data.reelUrl as string;
-        } else {
-          // Wan timed out — mark failed but don't block scene generation
-          await step.run("mark-wan-timeout", async () => {
-            await prisma.project.update({
-              where: { id: event.data.projectId },
-              data: { characterReelStatus: "FAILED" },
-            });
-          });
-          finalReelUrl = null;
-        }
+        return null; // Kling will generate without reel — degraded but not broken
       }
-    }
+    });
 
     // Step 3: Submit Kling image-to-video job and poll until complete
     const videoUrl = await step.run("generate-video", async () => {

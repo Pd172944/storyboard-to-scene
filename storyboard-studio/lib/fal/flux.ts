@@ -32,7 +32,7 @@ export async function upsampleSketch(
   referenceImageUrl: string,
   scenePrompt: string
 ): Promise<string> {
-  const prompt = `Photorealistic scene: ${scenePrompt}. Maintain exact composition from the sketch. Use the character appearance from this reference: ${referenceImageUrl}`;
+  const prompt = `Transform this rough sketch into a high quality, photorealistic scene. Scene description: ${scenePrompt}. Maintain the exact composition, poses, and layout from the sketch. Make it look like a professional photograph with natural lighting and realistic textures.`;
 
   const { request_id } = await fal.queue.submit(FLUX_MODEL_ID, {
     input: {
