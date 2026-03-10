@@ -15,6 +15,11 @@ export interface KlingInput {
   elements?: KlingElement[];
   aspect_ratio?: string;
   generate_audio?: boolean;
+  voice_id?: string;
+}
+
+interface KlingCreateVoiceOutput {
+  voice_id: string;
 }
 
 export interface KlingOutput {
@@ -32,6 +37,40 @@ export interface KlingStatusResult {
 }
 
 /**
+ * Create a reusable Kling Voice ID from an audio file URL.
+ *
+ * The Voice ID is project-level and cached in Postgres — create it once,
+ * reuse across all scenes. Pass the returned voiceId to submitKlingJob
+ * to get native lip-synced audio baked into the video.
+ *
+ * @param audioUrl - fal CDN URL of the audio file (WAV from Chatterbox HD)
+ * @param voiceName - a name to identify this voice in Kling
+ * @returns The Kling voice_id string
+ */
+export async function createKlingVoice(
+  audioUrl: string,
+  voiceName: string
+): Promise<string> {
+  const result = await fal.run("fal-ai/kling-video/v2.6/pro/create-voice", {
+    input: {
+      audio_url: audioUrl,
+      voice_name: voiceName,
+    },
+  });
+
+  // fal.run() returns output directly
+  const data = result as unknown as KlingCreateVoiceOutput;
+
+  if (!data?.voice_id) {
+    throw new Error(
+      "Kling create-voice completed but no voice_id in response"
+    );
+  }
+
+  return data.voice_id;
+}
+
+/**
  * Submit an image-to-video job to Kling O3 Pro reference-to-video.
  *
  * Uses `elements` to pass character reference images directly,
@@ -40,12 +79,14 @@ export interface KlingStatusResult {
  * @param imageUrl - URL of the photorealistic first frame (start_image_url)
  * @param motionPrompt - text prompt describing motion and action
  * @param characterRefUrls - optional array of character reference image URLs (1–3)
+ * @param voiceId - optional Kling Voice ID for native lip-synced audio
  * @returns The request_id for tracking this job
  */
 export async function submitKlingJob(
   imageUrl: string,
   motionPrompt: string,
-  characterRefUrls?: string[]
+  characterRefUrls?: string[],
+  voiceId?: string
 ): Promise<string> {
   // Build elements array if character references are provided
   let elements: KlingElement[] | undefined;
@@ -73,8 +114,10 @@ export async function submitKlingJob(
       prompt,
       duration: "5",
       aspect_ratio: "16:9",
-      generate_audio: false,
+      // Enable audio when a voice ID is provided; Kling will lip-sync the character
+      generate_audio: !!voiceId,
       ...(elements && { elements }),
+      ...(voiceId && { voice_id: voiceId }),
     } as KlingInput,
   });
 

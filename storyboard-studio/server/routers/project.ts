@@ -119,4 +119,59 @@ export const projectRouter = router({
         refImageUrls: project.characterRefUrls,
       };
     }),
+
+  /**
+   * Upload a voice sample for the project.
+   * Invalidates any existing Kling Voice ID so the next scene regenerates it.
+   */
+  setVoiceSample: publicProcedure
+    .input(
+      z.object({
+        projectId: z.string().cuid(),
+        voiceSampleUrl: z
+          .string()
+          .url()
+          .refine(
+            (url) => FAL_URL_PATTERN.test(url),
+            "URL must be a fal.media storage URL"
+          ),
+      })
+    )
+    .mutation(async ({ input }) => {
+      await prisma.project.update({
+        where: { id: input.projectId },
+        data: {
+          voiceSampleUrl: input.voiceSampleUrl,
+          voiceStatus: "PENDING",
+          klingVoiceId: null, // invalidate old voice ID — must regenerate from new sample
+        },
+      });
+      return { success: true };
+    }),
+
+  /**
+   * Get current voice status for a project.
+   */
+  getVoiceStatus: publicProcedure
+    .input(z.object({ projectId: z.string().cuid() }))
+    .query(async ({ input }) => {
+      const project = await prisma.project.findUnique({
+        where: { id: input.projectId },
+        select: {
+          voiceStatus: true,
+          klingVoiceId: true,
+          voiceSampleUrl: true,
+        },
+      });
+
+      if (!project) {
+        throw new Error(`Project ${input.projectId} not found`);
+      }
+
+      return {
+        voiceStatus: project.voiceStatus,
+        klingVoiceId: project.klingVoiceId,
+        voiceSampleUrl: project.voiceSampleUrl,
+      };
+    }),
 });

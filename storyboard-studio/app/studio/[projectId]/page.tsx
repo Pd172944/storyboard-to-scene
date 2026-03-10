@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import type { StoryboardCanvasHandle } from "@/components/canvas/StoryboardCanvas";
 import { SceneCard, type SceneFormData } from "@/components/scene/SceneCard";
 import { CharacterRefUpload } from "@/components/scene/CharacterRefUpload";
+import { VoiceSampleUpload } from "@/components/scene/VoiceSampleUpload";
 import { cn } from "@/lib/utils";
 
 const StoryboardCanvas = dynamic(
@@ -51,6 +52,7 @@ export default function StudioPage() {
   const canvasRef = useRef<StoryboardCanvasHandle>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeDialogue, setActiveDialogue] = useState<string>("");
 
   // Fetch project data
   const projectQuery = trpc.project.getProject.useQuery(
@@ -96,6 +98,22 @@ export default function StudioPage() {
 
   const characterReelStatus = (reelStatusQuery.data?.status ?? "NONE") as CharacterReelStatus;
   const characterRefUrls = reelStatusQuery.data?.refImageUrls ?? [];
+
+  // Poll voice status
+  const voiceStatusQuery = trpc.project.getVoiceStatus.useQuery(
+    { projectId },
+    {
+      enabled: !!projectId,
+      refetchInterval: (query) => {
+        const s = query.state.data?.voiceStatus;
+        if (s === "CREATING") return 4000;
+        return false;
+      },
+    }
+  );
+
+  const voiceSampleUrl = voiceStatusQuery.data?.voiceSampleUrl ?? null;
+  const voiceStatus = voiceStatusQuery.data?.voiceStatus ?? "NONE";
 
   // Upload a data URL (canvas export) to fal storage via presigned URL
   const uploadSketch = useCallback(
@@ -162,8 +180,10 @@ export default function StudioPage() {
           title: data.title,
           motionPrompt: data.motionPrompt,
           sketchDataUrl: sketchUrl,
+          dialogue: data.dialogue || undefined,
         });
 
+        setActiveDialogue(data.dialogue ?? "");
         setActiveSceneId(result.sceneId);
       } catch (error) {
         console.error("Failed to submit scene:", error);
@@ -261,6 +281,13 @@ export default function StudioPage() {
               initialRefUrls={characterRefUrls}
               initialReelStatus={characterReelStatus}
             />
+            <div className="border-t border-gray-700/50 pt-3">
+              <VoiceSampleUpload
+                projectId={projectId}
+                initialVoiceSampleUrl={voiceSampleUrl}
+                initialVoiceStatus={voiceStatus as "NONE" | "PENDING" | "CREATING" | "READY" | "FAILED"}
+              />
+            </div>
           </div>
 
           <SceneCard onSubmit={handleSubmit} isSubmitting={isSubmitting} />
@@ -271,7 +298,10 @@ export default function StudioPage() {
           {/* Show status board when a job is active */}
           {activeSceneId && sceneStatus && (
             <div className="space-y-6">
-              <JobStatusBoard status={sceneStatus} />
+              <JobStatusBoard
+                status={sceneStatus}
+                hasDialogue={!!activeDialogue.trim()}
+              />
 
               {/* Show uprendered image once available */}
               {uprenderUrl && (

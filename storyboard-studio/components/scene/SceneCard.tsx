@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { DialogueInput } from "@/components/scene/DialogueInput";
 
 const sceneFormSchema = z.object({
   title: z.string().min(1, "Scene title is required").max(200),
@@ -17,6 +18,7 @@ const sceneFormSchema = z.object({
 export interface SceneFormData {
   title: string;
   motionPrompt: string;
+  dialogue: string; // Phase 3: may be empty string
 }
 
 interface SceneCardProps {
@@ -28,6 +30,7 @@ interface SceneCardProps {
 export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps) {
   const [title, setTitle] = useState("");
   const [motionPrompt, setMotionPrompt] = useState("");
+  const [dialogue, setDialogue] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const handleSubmit = useCallback(
@@ -35,7 +38,6 @@ export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps)
       e.preventDefault();
       setErrors({});
 
-      // Validate text fields
       const result = sceneFormSchema.safeParse({ title, motionPrompt });
       if (!result.success) {
         const fieldErrors: Record<string, string> = {};
@@ -52,9 +54,10 @@ export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps)
       await onSubmit({
         title: result.data.title,
         motionPrompt: result.data.motionPrompt,
+        dialogue,
       });
     },
-    [title, motionPrompt, onSubmit]
+    [title, motionPrompt, dialogue, onSubmit]
   );
 
   return (
@@ -92,6 +95,12 @@ export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps)
               <p className="text-xs text-red-400">{errors.motionPrompt}</p>
             )}
           </div>
+
+          <DialogueInput
+            value={dialogue}
+            onChange={setDialogue}
+            disabled={isSubmitting}
+          />
 
           <Button
             type="submit"

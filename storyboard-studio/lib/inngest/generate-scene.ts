@@ -5,13 +5,16 @@ import {
   deleteJobState,
 } from "@/lib/redis";
 import { upsampleSketch } from "@/lib/fal/flux";
-import { submitKlingJob, waitForKlingCompletion } from "@/lib/fal/kling";
+import { submitKlingJob, waitForKlingCompletion, createKlingVoice } from "@/lib/fal/kling";
+import { synthesizeDialogue } from "@/lib/fal/chatterbox";
 
 interface GenerateSceneEventData {
   sceneId: string;
-  sketchDataUrl: string; // Now a fal storage URL (uploaded client-side)
+  sketchDataUrl: string; // fal storage URL (uploaded client-side)
   motionPrompt: string;
   projectId: string;
+  dialogue?: string;       // Phase 3: character dialogue for voice synthesis
+  voiceSampleUrl?: string; // Phase 3: project-level voice cloning sample
 }
 
 export const generateScene = inngest.createFunction(
@@ -27,16 +30,18 @@ export const generateScene = inngest.createFunction(
       sketchDataUrl,
       motionPrompt,
       projectId,
+      dialogue,
+      voiceSampleUrl,
     } = event.data as GenerateSceneEventData;
 
     const now = Date.now();
-
-    // sketchDataUrl is already a fal storage URL (uploaded client-side)
     const sketchUrl = sketchDataUrl;
 
-    // Step 1: Fetch character reference images FIRST so Flux can use them for
-    // identity anchoring. Without this, Flux generates a random person from the
-    // sketch alone and Kling has to fight against the wrong start frame.
+    // -------------------------------------------------------------------------
+    // Step 1: Fetch character reference images first.
+    // Must run before Flux so the primary ref can anchor character identity
+    // in the generated start frame.
+    // -------------------------------------------------------------------------
     const characterRefUrls = await step.run("fetch-character-refs", async () => {
       const project = await prisma.project.findUnique({
         where: { id: projectId },
@@ -45,45 +50,103 @@ export const generateScene = inngest.createFunction(
       return project?.characterRefUrls ?? [];
     });
 
-    // Step 2: Uprender sketch with Flux Kontext.
-    // When character refs are available, pass the primary ref as the Flux input
-    // image so the generated start frame has the correct character identity.
-    const uprenderUrl = await step.run("uprender-sketch", async () => {
-      await prisma.scene.update({
-        where: { id: sceneId },
-        data: { status: "UPRENDERING" },
-      });
-      await setJobState(sceneId, {
-        sceneId,
-        step: "uprendering",
-        startedAt: now,
-        heartbeatAt: Date.now(),
-      });
+    // -------------------------------------------------------------------------
+    // Steps 2a + 2b: Run Flux uprender and Chatterbox voice synthesis IN PARALLEL.
+    // These are independent operations — neither needs the other's output.
+    // Running them concurrently saves 8–15 seconds per scene.
+    // -------------------------------------------------------------------------
+    const [uprenderUrl, voiceWavUrl] = await Promise.all([
+      // 2a: Uprender sketch → photorealistic start frame
+      step.run("uprender-sketch", async () => {
+        await prisma.scene.update({
+          where: { id: sceneId },
+          data: { status: "UPRENDERING" },
+        });
+        await setJobState(sceneId, {
+          sceneId,
+          step: "uprendering",
+          startedAt: now,
+          heartbeatAt: Date.now(),
+        });
 
-      // Use first ref as the identity anchor for Flux; fall back to sketch if none
-      const primaryRef = characterRefUrls.length > 0 ? characterRefUrls[0] : undefined;
-      const url = await upsampleSketch(sketchUrl, motionPrompt, primaryRef);
+        // Use first character ref as identity anchor; fall back to sketch if none
+        const primaryRef = characterRefUrls.length > 0 ? characterRefUrls[0] : undefined;
+        const url = await upsampleSketch(sketchUrl, motionPrompt, primaryRef);
 
-      await prisma.scene.update({
-        where: { id: sceneId },
-        data: { uprenderUrl: url },
-      });
+        await prisma.scene.update({
+          where: { id: sceneId },
+          data: { uprenderUrl: url },
+        });
 
-      return url;
+        return url;
+      }),
+
+      // 2b: Synthesize dialogue audio (skipped if no dialogue)
+      step.run("synthesize-voice", async () => {
+        if (!dialogue?.trim()) return null;
+
+        try {
+          const wavUrl = await synthesizeDialogue(dialogue, voiceSampleUrl);
+          return wavUrl;
+        } catch (err) {
+          // Voice failure is non-fatal — log and continue without audio
+          console.error("[synthesize-voice] Chatterbox failed:", err);
+          return null;
+        }
+      }),
+    ]);
+
+    // -------------------------------------------------------------------------
+    // Step 3: Create Kling Voice ID from the synthesized WAV.
+    // Voice ID is project-level — cached in Postgres and reused across scenes.
+    // Returns null if no WAV was synthesized.
+    // -------------------------------------------------------------------------
+    const voiceId = await step.run("create-voice-id", async () => {
+      if (!voiceWavUrl) return null;
+
+      try {
+        // Check if this project already has a cached Voice ID
+        const project = await prisma.project.findUnique({
+          where: { id: projectId },
+          select: { klingVoiceId: true, voiceStatus: true },
+        });
+
+        if (project?.voiceStatus === "READY" && project.klingVoiceId) {
+          // Cache hit — reuse without calling Kling again (<1s)
+          return project.klingVoiceId;
+        }
+
+        // Create a new Voice ID from the synthesized WAV
+        const id = await createKlingVoice(voiceWavUrl, `project-${projectId}`);
+
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { klingVoiceId: id, voiceStatus: "READY" },
+        });
+
+        return id;
+      } catch (err) {
+        // Voice ID creation failure is non-fatal — scenes generate without audio
+        console.error("[create-voice-id] Kling voice creation failed:", err);
+        return null;
+      }
     });
 
-    // Step 3: Submit Kling O3 Pro R2V job with character elements and poll until complete
+    // -------------------------------------------------------------------------
+    // Step 4: Submit Kling O3 Pro R2V with character elements + optional voice ID.
+    // Poll until the video is ready.
+    // -------------------------------------------------------------------------
     const videoUrl = await step.run("generate-video", async () => {
       await prisma.scene.update({
         where: { id: sceneId },
         data: { status: "GENERATING_VIDEO" },
       });
 
-      // Pass character ref URLs directly to Kling as elements
       const requestId = await submitKlingJob(
         uprenderUrl,
         motionPrompt,
-        characterRefUrls.length > 0 ? characterRefUrls : undefined
+        characterRefUrls.length > 0 ? characterRefUrls : undefined,
+        voiceId ?? undefined
       );
 
       await setJobState(sceneId, {
@@ -99,7 +162,9 @@ export const generateScene = inngest.createFunction(
       return url;
     });
 
-    // Step 4: Finalize — persist video URL to Postgres, clean up Redis
+    // -------------------------------------------------------------------------
+    // Step 5: Finalize — persist video URL to Postgres, clean up Redis
+    // -------------------------------------------------------------------------
     await step.run("finalize", async () => {
       await prisma.scene.update({
         where: { id: sceneId },

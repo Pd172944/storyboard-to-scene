@@ -18,15 +18,23 @@ export const sceneRouter = router({
         title: z.string().min(1, "Scene title is required").max(200),
         motionPrompt: z.string().min(1, "Motion prompt is required").max(2000),
         sketchDataUrl: z.string().min(1, "Sketch is required"),
+        dialogue: z.string().max(500).optional(), // Phase 3: character dialogue
       })
     )
     .mutation(async ({ input }) => {
+      // Fetch project to get the voice sample URL for the Inngest event
+      const project = await prisma.project.findUnique({
+        where: { id: input.projectId },
+        select: { voiceSampleUrl: true },
+      });
+
       const scene = await prisma.scene.create({
         data: {
           projectId: input.projectId,
           title: input.title,
           motionPrompt: input.motionPrompt,
           sketchDataUrl: input.sketchDataUrl,
+          dialogue: input.dialogue ?? null,
           status: "PENDING",
         },
       });
@@ -38,6 +46,8 @@ export const sceneRouter = router({
           sketchDataUrl: input.sketchDataUrl,
           motionPrompt: input.motionPrompt,
           projectId: input.projectId,
+          dialogue: input.dialogue,
+          voiceSampleUrl: project?.voiceSampleUrl ?? undefined,
         },
       });
 
