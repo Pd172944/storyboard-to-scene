@@ -46,6 +46,11 @@ model Scene {
   videoUrl          String?
   status            SceneStatus @default(PENDING)
   dialogue          String?     // Phase 3: character dialogue lines for this scene
+
+  // Phase 4 additions
+  previewVideoUrl   String?     // LTX-Video draft output URL
+  ltxRequestId      String?     // in-flight LTX job request_id
+  renderApprovedAt  DateTime?   // when user clicked "Render Final"
   inngestRunId      String?
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
@@ -56,10 +61,17 @@ model Scene {
 enum SceneStatus {
   PENDING
   UPLOADING
-  UPRENDERING
-  GENERATING_VIDEO
-  COMPLETE
-  FAILED
+
+  // Draft stage (LTX-Video)
+  PREVIEWING         // LTX job in flight
+  PREVIEW_READY      // LTX complete, awaiting user approval
+  PREVIEW_FAILED     // LTX failed — user can retry or go straight to final
+
+  // Final stage (Kling)
+  UPRENDERING        // Flux uprendering for final render
+  GENERATING_VIDEO   // Kling job in flight
+  COMPLETE           // Final video ready
+  FAILED             // Final render failed
 }
 
 enum VoiceStatus {

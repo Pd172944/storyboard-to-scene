@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { router, publicProcedure } from "@/lib/trpc/server";
 import { prisma } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
@@ -55,6 +56,115 @@ export const sceneRouter = router({
     }),
 
   /**
+   * Submit a scene for draft preview generation via LTX-Video.
+   * Fast path — fires the preview workflow, not the Kling workflow.
+   * Flux uprender runs once here; the result is reused for the final render.
+   */
+  submitPreview: publicProcedure
+    .input(
+      z.object({
+        projectId: z.string().cuid(),
+        title: z.string().min(1, "Scene title is required").max(200),
+        motionPrompt: z.string().min(1, "Motion prompt is required").max(2000),
+        sketchDataUrl: z.string().min(1, "Sketch is required"),
+        dialogue: z.string().max(500).optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const scene = await prisma.scene.create({
+        data: {
+          projectId: input.projectId,
+          title: input.title,
+          motionPrompt: input.motionPrompt,
+          sketchDataUrl: input.sketchDataUrl,
+          dialogue: input.dialogue ?? null,
+          status: "PENDING",
+        },
+      });
+
+      await inngest.send({
+        name: "studio/preview.generate",
+        data: {
+          sceneId: scene.id,
+          sketchDataUrl: input.sketchDataUrl,
+          motionPrompt: input.motionPrompt,
+          projectId: input.projectId,
+        },
+      });
+
+      return { sceneId: scene.id };
+    }),
+
+  /**
+   * Approve a draft preview for final Kling render.
+   * Idempotent — safe to call multiple times (second call is a no-op).
+   * Reuses the uprenderUrl already set during the preview stage (Flux runs once total).
+   */
+  approveForRender: publicProcedure
+    .input(z.object({ sceneId: z.string().cuid() }))
+    .mutation(async ({ input }) => {
+      const scene = await prisma.scene.findUnique({
+        where: { id: input.sceneId },
+        select: {
+          id: true,
+          projectId: true,
+          status: true,
+          renderApprovedAt: true,
+          sketchDataUrl: true,
+          motionPrompt: true,
+          dialogue: true,
+        },
+      });
+
+      if (!scene) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Scene not found" });
+      }
+
+      // Idempotency guard — if already approved, return silently
+      if (scene.renderApprovedAt) {
+        return { sceneId: scene.id };
+      }
+
+      if (scene.status !== "PREVIEW_READY" && scene.status !== "PREVIEW_FAILED") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Cannot approve scene with status ${scene.status}. Must be PREVIEW_READY or PREVIEW_FAILED.`,
+        });
+      }
+
+      // Fetch project voice sample for the Kling workflow
+      const project = await prisma.project.findUnique({
+        where: { id: scene.projectId },
+        select: { voiceSampleUrl: true },
+      });
+
+      // Mark as approved and move to final render stage
+      await prisma.scene.update({
+        where: { id: scene.id },
+        data: {
+          renderApprovedAt: new Date(),
+          status: "UPRENDERING",
+        },
+      });
+
+      // Fire the same Kling workflow as submitScene.
+      // generate-scene.ts will detect the existing uprenderUrl and skip Flux.
+      await inngest.send({
+        name: "studio/scene.generate",
+        data: {
+          sceneId: scene.id,
+          sketchDataUrl: scene.sketchDataUrl ?? "",
+          motionPrompt: scene.motionPrompt,
+          projectId: scene.projectId,
+          dialogue: scene.dialogue ?? undefined,
+          voiceSampleUrl: project?.voiceSampleUrl ?? undefined,
+        },
+      });
+
+      return { sceneId: scene.id };
+    }),
+
+  /**
    * Get the current status of a scene (polled by the client every 3s).
    */
   getSceneStatus: publicProcedure
@@ -70,6 +180,9 @@ export const sceneRouter = router({
           videoUrl: true,
           referenceImageUrl: true,
           motionPrompt: true,
+          dialogue: true,
+          previewVideoUrl: true,
+          renderApprovedAt: true,
           createdAt: true,
           updatedAt: true,
         },

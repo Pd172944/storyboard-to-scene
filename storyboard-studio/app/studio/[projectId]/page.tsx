@@ -37,6 +37,9 @@ type ProjectScene = RouterOutputs["project"]["getProject"]["scenes"][number];
 type SceneStatus =
   | "PENDING"
   | "UPLOADING"
+  | "PREVIEWING"
+  | "PREVIEW_READY"
+  | "PREVIEW_FAILED"
   | "UPRENDERING"
   | "GENERATING_VIDEO"
   | "COMPLETE"
@@ -52,6 +55,7 @@ export default function StudioPage() {
   const canvasRef = useRef<StoryboardCanvasHandle>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
   const [activeDialogue, setActiveDialogue] = useState<string>("");
 
   // Fetch project data
@@ -60,7 +64,7 @@ export default function StudioPage() {
     { enabled: !!projectId }
   );
 
-  // Poll scene status every 3 seconds when a scene is active
+  // Poll scene status — 2s during draft (LTX is fast), 3s during final
   const sceneStatusQuery = trpc.scene.getSceneStatus.useQuery(
     { sceneId: activeSceneId! },
     {
@@ -68,12 +72,17 @@ export default function StudioPage() {
       refetchInterval: (query) => {
         const status = query.state.data?.status;
         if (status === "COMPLETE" || status === "FAILED") return false;
+        if (status === "PREVIEW_READY" || status === "PREVIEW_FAILED") return false;
+        // 2s during draft stage — catch LTX completing quickly
+        if (status === "PREVIEWING") return 2000;
         return 3000;
       },
     }
   );
 
   const submitSceneMutation = trpc.scene.submitScene.useMutation();
+  const submitPreviewMutation = trpc.scene.submitPreview.useMutation();
+  const approveForRenderMutation = trpc.scene.approveForRender.useMutation();
   const deleteSceneMutation = trpc.scene.deleteScene.useMutation({
     onSuccess: (_data, variables) => {
       if (activeSceneId === variables.sceneId) {
@@ -162,20 +171,17 @@ export default function StudioPage() {
     []
   );
 
-  const handleSubmit = useCallback(
+  // Phase 4: Submit draft preview via LTX
+  const handlePreview = useCallback(
     async (data: SceneFormData) => {
       if (!canvasRef.current) return;
 
       setIsSubmitting(true);
       try {
-        // 1. Export sketch from canvas
         const sketchDataUrl = canvasRef.current.getSketchDataUrl();
-
-        // 2. Upload sketch to fal storage via proxy
         const sketchUrl = await uploadSketch(sketchDataUrl);
 
-        // 3. Submit scene via tRPC — reference image comes from project character refs (server-side)
-        const result = await submitSceneMutation.mutateAsync({
+        const result = await submitPreviewMutation.mutateAsync({
           projectId,
           title: data.title,
           motionPrompt: data.motionPrompt,
@@ -186,13 +192,29 @@ export default function StudioPage() {
         setActiveDialogue(data.dialogue ?? "");
         setActiveSceneId(result.sceneId);
       } catch (error) {
-        console.error("Failed to submit scene:", error);
+        console.error("Failed to submit preview:", error);
       } finally {
         setIsSubmitting(false);
       }
     },
-    [projectId, submitSceneMutation, uploadSketch]
+    [projectId, submitPreviewMutation, uploadSketch]
   );
+
+  // Phase 4: Approve draft for final Kling render
+  const handleApproveForRender = useCallback(async () => {
+    if (!activeSceneId) return;
+
+    setIsApproving(true);
+    try {
+      await approveForRenderMutation.mutateAsync({ sceneId: activeSceneId });
+      // Resume polling — scene is now in UPRENDERING/GENERATING_VIDEO
+      sceneStatusQuery.refetch();
+    } catch (error) {
+      console.error("Failed to approve for render:", error);
+    } finally {
+      setIsApproving(false);
+    }
+  }, [activeSceneId, approveForRenderMutation, sceneStatusQuery]);
 
   // Auto-select the latest active scene on page load
   useEffect(() => {
@@ -206,18 +228,30 @@ export default function StudioPage() {
     }
   }, [projectQuery.data, activeSceneId]);
 
-  const sceneStatus = sceneStatusQuery.data?.status as
-    | SceneStatus
-    | undefined;
+  const sceneStatus = sceneStatusQuery.data?.status as SceneStatus | undefined;
   const videoUrl = sceneStatusQuery.data?.videoUrl;
   const uprenderUrl = sceneStatusQuery.data?.uprenderUrl;
+  const previewVideoUrl = sceneStatusQuery.data?.previewVideoUrl;
+
+  // Derived stage for JobStatusBoard
+  const stage: "draft" | "final" | "idle" =
+    sceneStatus && ["PREVIEWING", "PREVIEW_READY", "PREVIEW_FAILED"].includes(sceneStatus)
+      ? "draft"
+      : sceneStatus && ["UPRENDERING", "GENERATING_VIDEO", "COMPLETE", "FAILED"].includes(sceneStatus)
+      ? "final"
+      : "idle";
+
+  const canRenderFinal =
+    sceneStatus === "PREVIEW_READY" || sceneStatus === "PREVIEW_FAILED";
 
   const isJobActive =
     activeSceneId &&
     sceneStatus &&
     sceneStatus !== "COMPLETE" &&
     sceneStatus !== "FAILED" &&
-    sceneStatus !== "PENDING";
+    sceneStatus !== "PENDING" &&
+    sceneStatus !== "PREVIEW_READY" &&
+    sceneStatus !== "PREVIEW_FAILED";
 
   if (projectQuery.isLoading) {
     return (
@@ -290,7 +324,13 @@ export default function StudioPage() {
             </div>
           </div>
 
-          <SceneCard onSubmit={handleSubmit} isSubmitting={isSubmitting} />
+          <SceneCard
+            onPreview={handlePreview}
+            onRenderFinal={handleApproveForRender}
+            canRenderFinal={canRenderFinal}
+            isSubmitting={isSubmitting}
+            isApproving={isApproving}
+          />
         </div>
 
         {/* Right panel: Status / Video */}
@@ -301,35 +341,25 @@ export default function StudioPage() {
               <JobStatusBoard
                 status={sceneStatus}
                 hasDialogue={!!activeDialogue.trim()}
+                stage={stage}
               />
 
-              {/* Show uprendered image once available */}
-              {uprenderUrl && (
+              {/* Video player — handles all draft/final states */}
+              <VideoPlayer
+                videoUrl={videoUrl}
+                previewVideoUrl={previewVideoUrl}
+                sceneStatus={sceneStatus}
+                onRenderFinal={handleApproveForRender}
+                isApproving={isApproving}
+              />
+
+              {/* Show uprendered frame only during final render stages */}
+              {uprenderUrl && stage === "final" && sceneStatus === "UPRENDERING" && (
                 <div className="space-y-2">
-                  <h3 className="text-sm font-semibold text-gray-400">
-                    Uprendered Frame
-                  </h3>
+                  <h3 className="text-sm font-semibold text-gray-400">Start Frame</h3>
                   <div className="overflow-hidden rounded-xl border border-gray-700">
-                    <img
-                      src={uprenderUrl}
-                      alt="Uprendered first frame"
-                      className="h-auto w-full"
-                    />
+                    <img src={uprenderUrl} alt="Uprendered first frame" className="h-auto w-full" />
                   </div>
-                </div>
-              )}
-
-              {/* Show video player when complete */}
-              {videoUrl && sceneStatus === "COMPLETE" && (
-                <VideoPlayer src={videoUrl} title="Generated Video" />
-              )}
-
-              {/* Error message */}
-              {sceneStatus === "FAILED" && (
-                <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
-                  <p className="text-sm text-red-300">
-                    Scene generation failed. Please try again.
-                  </p>
                 </div>
               )}
 
@@ -358,8 +388,11 @@ export default function StudioPage() {
             <div className="flex flex-1 flex-col items-center justify-center gap-3 text-gray-600">
               <Film className="h-12 w-12" />
               <p className="text-center text-sm">
-                Draw your scene on the canvas, fill in the details, and hit
-                Generate to see the magic happen.
+                Draw your scene, fill in the details, and hit{" "}
+                <span className="text-gray-400">Preview</span> to see a draft
+                in ~5 seconds. Then hit{" "}
+                <span className="text-indigo-400">Render Final</span> for full
+                quality.
               </p>
             </div>
           )}

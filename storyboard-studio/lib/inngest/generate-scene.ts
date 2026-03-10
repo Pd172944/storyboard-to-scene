@@ -56,8 +56,16 @@ export const generateScene = inngest.createFunction(
     // Running them concurrently saves 8–15 seconds per scene.
     // -------------------------------------------------------------------------
     const [uprenderUrl, voiceWavUrl] = await Promise.all([
-      // 2a: Uprender sketch → photorealistic start frame
+      // 2a: Uprender sketch → photorealistic start frame.
+      // Phase 4: If uprenderUrl was already set during the preview stage, reuse it —
+      // Flux must only run ONCE per scene total (saves cost + ~15s).
       step.run("uprender-sketch", async () => {
+        // Check for existing frame from preview stage
+        const existing = await prisma.scene.findUnique({
+          where: { id: sceneId },
+          select: { uprenderUrl: true },
+        });
+
         await prisma.scene.update({
           where: { id: sceneId },
           data: { status: "UPRENDERING" },
@@ -68,6 +76,11 @@ export const generateScene = inngest.createFunction(
           startedAt: now,
           heartbeatAt: Date.now(),
         });
+
+        if (existing?.uprenderUrl) {
+          // Frame exists — skip Flux entirely, completes in <1s
+          return existing.uprenderUrl;
+        }
 
         // Use first character ref as identity anchor; fall back to sketch if none
         const primaryRef = characterRefUrls.length > 0 ? characterRefUrls[0] : undefined;

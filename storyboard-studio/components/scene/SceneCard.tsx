@@ -2,7 +2,7 @@
 
 import { useState, useCallback, type FormEvent } from "react";
 import { z } from "zod";
-import { Loader2, Send } from "lucide-react";
+import { Loader2, Eye, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,16 +18,26 @@ const sceneFormSchema = z.object({
 export interface SceneFormData {
   title: string;
   motionPrompt: string;
-  dialogue: string; // Phase 3: may be empty string
+  dialogue: string;
 }
 
 interface SceneCardProps {
-  onSubmit: (data: SceneFormData) => Promise<void>;
+  onPreview: (data: SceneFormData) => Promise<void>;   // Phase 4: creates draft via LTX
+  onRenderFinal?: () => void;                          // Phase 4: approves draft for Kling
+  canRenderFinal?: boolean;                            // enabled once PREVIEW_READY
   isSubmitting: boolean;
+  isApproving?: boolean;
   className?: string;
 }
 
-export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps) {
+export function SceneCard({
+  onPreview,
+  onRenderFinal,
+  canRenderFinal = false,
+  isSubmitting,
+  isApproving = false,
+  className,
+}: SceneCardProps) {
   const [title, setTitle] = useState("");
   const [motionPrompt, setMotionPrompt] = useState("");
   const [dialogue, setDialogue] = useState("");
@@ -51,13 +61,13 @@ export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps)
         return;
       }
 
-      await onSubmit({
+      await onPreview({
         title: result.data.title,
         motionPrompt: result.data.motionPrompt,
         dialogue,
       });
     },
-    [title, motionPrompt, dialogue, onSubmit]
+    [title, motionPrompt, dialogue, onPreview]
   );
 
   return (
@@ -102,24 +112,52 @@ export function SceneCard({ onSubmit, isSubmitting, className }: SceneCardProps)
             disabled={isSubmitting}
           />
 
-          <Button
-            type="submit"
-            size="lg"
-            disabled={isSubmitting}
-            className="w-full"
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Generating…
-              </>
-            ) : (
-              <>
-                <Send className="mr-2 h-4 w-4" />
-                Generate Scene
-              </>
-            )}
-          </Button>
+          {/* Two-stage buttons */}
+          <div className="flex gap-2">
+            {/* Preview — fast LTX draft */}
+            <Button
+              type="submit"
+              size="lg"
+              disabled={isSubmitting}
+              className="flex-1"
+              variant="outline"
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Previewing…
+                </>
+              ) : (
+                <>
+                  <Eye className="mr-2 h-4 w-4" />
+                  Preview
+                  <span className="ml-1.5 text-[10px] opacity-60">~5s</span>
+                </>
+              )}
+            </Button>
+
+            {/* Render Final — full Kling quality */}
+            <Button
+              type="button"
+              size="lg"
+              disabled={!canRenderFinal || isApproving || isSubmitting}
+              onClick={onRenderFinal}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40"
+            >
+              {isApproving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Sending…
+                </>
+              ) : (
+                <>
+                  <Zap className="mr-2 h-4 w-4" />
+                  Render Final
+                  <span className="ml-1.5 text-[10px] opacity-60">~90s</span>
+                </>
+              )}
+            </Button>
+          </div>
         </form>
       </CardContent>
     </Card>

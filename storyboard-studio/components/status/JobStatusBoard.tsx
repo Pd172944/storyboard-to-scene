@@ -19,6 +19,9 @@ import { cn } from "@/lib/utils";
 type SceneStatus =
   | "PENDING"
   | "UPLOADING"
+  | "PREVIEWING"
+  | "PREVIEW_READY"
+  | "PREVIEW_FAILED"
   | "UPRENDERING"
   | "GENERATING_VIDEO"
   | "COMPLETE"
@@ -28,7 +31,8 @@ type StepState = "pending" | "active" | "complete" | "failed" | "skipped";
 
 interface JobStatusBoardProps {
   status: SceneStatus;
-  hasDialogue?: boolean; // controls voice step visibility
+  hasDialogue?: boolean;
+  stage?: "draft" | "final" | "idle"; // Phase 4
   className?: string;
 }
 
@@ -36,6 +40,11 @@ interface JobStatusBoardProps {
 const STATUS_INDEX: Record<SceneStatus, number> = {
   PENDING: -1,
   UPLOADING: 0,
+  // Draft stage
+  PREVIEWING: 1,
+  PREVIEW_READY: 2,
+  PREVIEW_FAILED: 2,
+  // Final stage
   UPRENDERING: 1,
   GENERATING_VIDEO: 2,
   COMPLETE: 3,
@@ -138,91 +147,108 @@ function StepRow({
   );
 }
 
-export function JobStatusBoard({ status, hasDialogue = false, className }: JobStatusBoardProps) {
-  const steps = useMemo(() => {
-    // Derive state for each logical step based on scene status
-    const uploading = resolveState(status, 0, 1);
+export function JobStatusBoard({
+  status,
+  hasDialogue = false,
+  stage = "idle",
+  className,
+}: JobStatusBoardProps) {
+  const isDraft = stage === "draft";
+  const isFinal = stage === "final";
 
-    // Uprendering and voice synthesis run in parallel (both during UPRENDERING status)
+  const draftSteps = useMemo(() => {
+    if (!isDraft) return null;
+    const uploading: StepState = "complete"; // uploading always done by draft stage
+    const uprendering: StepState =
+      status === "PREVIEWING" ? "active"
+      : status === "PREVIEW_READY" || status === "PREVIEW_FAILED" ? "complete"
+      : "pending";
+    const generating: StepState =
+      status === "PREVIEWING" ? "active"
+      : status === "PREVIEW_READY" ? "complete"
+      : status === "PREVIEW_FAILED" ? "failed"
+      : "pending";
+    const ready: StepState =
+      status === "PREVIEW_READY" ? "complete"
+      : status === "PREVIEW_FAILED" ? "failed"
+      : "pending";
+    return { uploading, uprendering, generating, ready };
+  }, [status, isDraft]);
+
+  const finalSteps = useMemo(() => {
+    if (!isFinal) return null;
     const uprendering = resolveState(status, 1, 2);
     const synthVoice = hasDialogue ? resolveState(status, 1, 2) : ("skipped" as StepState);
     const createVoiceId = hasDialogue ? resolveState(status, 2, 2) : ("skipped" as StepState);
-
     const generatingVideo = resolveState(status, 2, 3);
-    const complete = status === "COMPLETE" ? ("complete" as StepState) : ("pending" as StepState);
-
-    return { uploading, uprendering, synthVoice, createVoiceId, generatingVideo, complete };
-  }, [status, hasDialogue]);
-
-  const showVoiceSteps = hasDialogue;
+    const complete: StepState = status === "COMPLETE" ? "complete" : "pending";
+    return { uprendering, synthVoice, createVoiceId, generatingVideo, complete };
+  }, [status, isFinal, hasDialogue]);
 
   return (
     <div className={cn("space-y-3", className)}>
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-400">
-        Pipeline Status
-      </h3>
+      {/* ── DRAFT TRACK ─────────────────────────────────────────────────── */}
+      {isDraft && draftSteps && (
+        <>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-400">
+              Draft Stage
+            </h3>
+            <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+              LTX ~5s
+            </span>
+          </div>
+          <div className="space-y-0">
+            <StepRow icon={<Upload className="h-4 w-4" />} label="Uploading assets" state={draftSteps.uploading} />
+            <StepRow icon={<Sparkles className="h-4 w-4" />} label="Uprendering sketch" state={draftSteps.uprendering} />
+            <StepRow icon={<Film className="h-4 w-4" />} label="Generating draft" state={draftSteps.generating} />
+            <StepRow icon={<PartyPopper className="h-4 w-4" />} label="Preview ready" state={draftSteps.ready} showConnector={false} />
+          </div>
+        </>
+      )}
 
-      <div className="space-y-0">
-        <StepRow
-          icon={<Upload className="h-4 w-4" />}
-          label="Uploading assets"
-          state={steps.uploading}
-        />
-
-        {/* Parallel group: Uprendering + Voice Synthesis */}
-        {showVoiceSteps ? (
-          <>
-            {/* Parallel group indicator */}
-            <div className="ml-6 flex h-4 items-center gap-2">
-              <div className={cn("h-full w-px", steps.uploading === "complete" ? "bg-emerald-500/40" : "bg-gray-700")} />
-              <div className="flex items-center gap-1 text-[9px] text-gray-600 font-medium uppercase tracking-wider">
-                <GitBranch className="h-2.5 w-2.5" />
-                parallel
-              </div>
-            </div>
-            <div className="ml-4 space-y-1 border-l-2 border-gray-700/60 pl-3">
-              <StepRow
-                icon={<Sparkles className="h-4 w-4" />}
-                label="Uprendering sketch"
-                state={steps.uprendering}
-                showConnector={false}
-              />
-              <StepRow
-                icon={<Mic className="h-4 w-4" />}
-                label="Synthesizing voice"
-                state={steps.synthVoice}
-                showConnector={false}
-              />
-            </div>
-            <div className="ml-6 h-4 flex items-center">
-              <div className={cn("h-full w-px", steps.uprendering === "complete" ? "bg-emerald-500/40" : "bg-gray-700")} />
-            </div>
+      {/* ── FINAL TRACK ─────────────────────────────────────────────────── */}
+      {isFinal && finalSteps && (
+        <>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-400">
+              Final Render
+            </h3>
+            <span className="rounded-full bg-indigo-500/20 px-2 py-0.5 text-[10px] font-medium text-indigo-300">
+              Kling ~90s
+            </span>
+          </div>
+          <div className="space-y-0">
             <StepRow
-              icon={<Fingerprint className="h-4 w-4" />}
-              label="Creating voice ID"
-              state={steps.createVoiceId}
+              icon={<Sparkles className="h-4 w-4" />}
+              label="Uprendering sketch"
+              state={finalSteps.uprendering}
             />
-          </>
-        ) : (
-          <StepRow
-            icon={<Sparkles className="h-4 w-4" />}
-            label="Uprendering sketch"
-            state={steps.uprendering}
-          />
-        )}
 
-        <StepRow
-          icon={<Film className="h-4 w-4" />}
-          label="Generating video"
-          state={steps.generatingVideo}
-        />
-        <StepRow
-          icon={<PartyPopper className="h-4 w-4" />}
-          label="Complete"
-          state={steps.complete}
-          showConnector={false}
-        />
-      </div>
+            {hasDialogue ? (
+              <>
+                <div className="ml-6 flex h-4 items-center gap-2">
+                  <div className={cn("h-full w-px", finalSteps.uprendering === "complete" ? "bg-emerald-500/40" : "bg-gray-700")} />
+                  <div className="flex items-center gap-1 text-[9px] text-gray-600 font-medium uppercase tracking-wider">
+                    <GitBranch className="h-2.5 w-2.5" />
+                    parallel
+                  </div>
+                </div>
+                <div className="ml-4 space-y-1 border-l-2 border-gray-700/60 pl-3">
+                  <StepRow icon={<Mic className="h-4 w-4" />} label="Synthesizing voice" state={finalSteps.synthVoice} showConnector={false} />
+                </div>
+                <div className="ml-6 h-4 flex items-center">
+                  <div className={cn("h-full w-px", finalSteps.synthVoice === "complete" ? "bg-emerald-500/40" : "bg-gray-700")} />
+                </div>
+                <StepRow icon={<Fingerprint className="h-4 w-4" />} label="Creating voice ID" state={finalSteps.createVoiceId} />
+              </>
+            ) : null}
+
+            <StepRow icon={<Film className="h-4 w-4" />} label="Generating video" state={finalSteps.generatingVideo} />
+            <StepRow icon={<PartyPopper className="h-4 w-4" />} label="Complete" state={finalSteps.complete} showConnector={false} />
+          </div>
+        </>
+      )}
     </div>
   );
 }
