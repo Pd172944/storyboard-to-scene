@@ -34,7 +34,20 @@ export const generateScene = inngest.createFunction(
     // sketchDataUrl is already a fal storage URL (uploaded client-side)
     const sketchUrl = sketchDataUrl;
 
-    // Step 1: Uprender sketch with Flux Kontext
+    // Step 1: Fetch character reference images FIRST so Flux can use them for
+    // identity anchoring. Without this, Flux generates a random person from the
+    // sketch alone and Kling has to fight against the wrong start frame.
+    const characterRefUrls = await step.run("fetch-character-refs", async () => {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { characterRefUrls: true },
+      });
+      return project?.characterRefUrls ?? [];
+    });
+
+    // Step 2: Uprender sketch with Flux Kontext.
+    // When character refs are available, pass the primary ref as the Flux input
+    // image so the generated start frame has the correct character identity.
     const uprenderUrl = await step.run("uprender-sketch", async () => {
       await prisma.scene.update({
         where: { id: sceneId },
@@ -47,7 +60,9 @@ export const generateScene = inngest.createFunction(
         heartbeatAt: Date.now(),
       });
 
-      const url = await upsampleSketch(sketchUrl, motionPrompt);
+      // Use first ref as the identity anchor for Flux; fall back to sketch if none
+      const primaryRef = characterRefUrls.length > 0 ? characterRefUrls[0] : undefined;
+      const url = await upsampleSketch(sketchUrl, motionPrompt, primaryRef);
 
       await prisma.scene.update({
         where: { id: sceneId },
@@ -55,15 +70,6 @@ export const generateScene = inngest.createFunction(
       });
 
       return url;
-    });
-
-    // Step 2: Fetch character reference images from the project
-    const characterRefUrls = await step.run("fetch-character-refs", async () => {
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { characterRefUrls: true },
-      });
-      return project?.characterRefUrls ?? [];
     });
 
     // Step 3: Submit Kling O3 Pro R2V job with character elements and poll until complete

@@ -109,11 +109,13 @@ export function CharacterRefUpload({
         setImageUrls(newUrls);
 
         // Auto-save character refs via tRPC
+        // setCharacterRefs immediately marks status COMPLETE in the DB
+        // (we use Kling O3 Pro elements directly — no async reel generation needed)
         await setCharacterRefsMutation.mutateAsync({
           projectId,
           referenceImageUrls: newUrls,
         });
-        setReelStatus("PENDING");
+        setReelStatus("COMPLETE");
       } catch (error) {
         console.error("Failed to upload reference image:", error);
       } finally {
@@ -139,7 +141,7 @@ export function CharacterRefUpload({
             projectId,
             referenceImageUrls: newUrls,
           });
-          setReelStatus("PENDING");
+          setReelStatus("COMPLETE");
         } else {
           // Clear refs in DB — update directly since setCharacterRefs requires >= 1
           // When all images are removed, just invalidate
@@ -201,7 +203,7 @@ export function CharacterRefUpload({
         return (
           <span className="flex items-center gap-1.5 text-xs text-emerald-400">
             <CheckCircle2 className="h-3 w-3" />
-            Identity reel ready
+            Character refs ready — identity will be locked in video
           </span>
         );
       case "FAILED":
