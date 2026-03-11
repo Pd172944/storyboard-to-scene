@@ -1,7 +1,6 @@
 import { inngest } from "@/lib/inngest/client";
 import { prisma } from "@/lib/db";
-import { upsampleSketch } from "@/lib/fal/flux";
-import { submitLtxJob } from "@/lib/fal/ltx";
+import { submitLtxJob, waitForLtxCompletion } from "@/lib/fal/ltx";
 
 interface PreviewGenerateEventData {
   sceneId: string;
@@ -13,10 +12,13 @@ interface PreviewGenerateEventData {
 /**
  * Draft preview workflow — intentionally lean, speed is the only goal.
  *
- * Does NOT use Wan, Chatterbox, or voice.
- * Pipeline: fetch-refs → uprender-sketch → submit-ltx → wait-for-ltx → save-preview
+ * Passes the sketch directly to LTX — no Flux uprender for drafts.
+ * Flux only runs once, during the final render (generate-scene.ts), where
+ * the uprenderUrl is then cached and reused for any subsequent re-renders.
  *
- * LTX generates a low-quality 480p draft in 3–8 seconds so users can verify
+ * Pipeline: submit-ltx (sketch → video) → save-preview
+ *
+ * LTX generates a low-quality 480p draft in 5–30s so users can verify
  * motion and composition before committing to the 60–90 second Kling final render.
  */
 export const generatePreview = inngest.createFunction(
@@ -27,95 +29,40 @@ export const generatePreview = inngest.createFunction(
   },
   { event: "studio/preview.generate" },
   async ({ event, step }) => {
-    const { sceneId, sketchDataUrl, motionPrompt, projectId } =
+    const { sceneId, sketchDataUrl, motionPrompt } =
       event.data as PreviewGenerateEventData;
 
-    // Step 1: Fetch character refs so Flux generates the correct character
-    // in the start frame — even drafts should show the right person.
-    const characterRefUrls = await step.run("fetch-character-refs-preview", async () => {
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: { characterRefUrls: true },
-      });
-      return project?.characterRefUrls ?? [];
-    });
-
-    // Step 2: Uprender sketch → photorealistic start frame.
-    // If uprenderUrl already exists (e.g. retry after partial failure), reuse it.
-    const uprenderUrl = await step.run("uprender-sketch-preview", async () => {
-      const existing = await prisma.scene.findUnique({
-        where: { id: sceneId },
-        select: { uprenderUrl: true },
-      });
-
-      if (existing?.uprenderUrl) {
-        // Reuse existing frame — avoid a second Flux charge on retry
-        return existing.uprenderUrl;
-      }
-
+    // Step 1: Submit LTX job directly with the sketch.
+    // No Flux uprender for drafts — sketch quality is fine for motion preview.
+    const previewVideoUrl = await step.run("generate-ltx-draft", async () => {
       await prisma.scene.update({
         where: { id: sceneId },
         data: { status: "PREVIEWING" },
       });
 
-      const primaryRef = characterRefUrls.length > 0 ? characterRefUrls[0] : undefined;
-      const url = await upsampleSketch(sketchDataUrl, motionPrompt, primaryRef);
+      const requestId = await submitLtxJob(sketchDataUrl, motionPrompt);
 
       await prisma.scene.update({
         where: { id: sceneId },
-        data: { uprenderUrl: url },
+        data: { ltxRequestId: requestId },
       });
 
-      return url;
+      const videoUrl = await waitForLtxCompletion(requestId);
+      return videoUrl;
     });
 
-    // Step 3: Submit LTX draft job with webhook notification.
-    const ltxRequestId = await step.run("submit-ltx", async () => {
-      const webhookUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/ltx`;
-      const requestId = await submitLtxJob(uprenderUrl, motionPrompt, webhookUrl);
-
-      await prisma.scene.update({
-        where: { id: sceneId },
-        data: {
-          ltxRequestId: requestId,
-          status: "PREVIEWING",
-        },
-      });
-
-      return requestId;
-    });
-
-    // Step 4: Wait for LTX webhook to arrive (non-blocking — Inngest suspends here).
-    // LTX is fast; 3-minute timeout is a conservative safety net.
-    const completionEvent = await step.waitForEvent("wait-for-ltx", {
-      event: "studio/ltx.complete",
-      timeout: "3m",
-      if: `async.data.ltxRequestId == '${ltxRequestId}'`,
-    });
-
-    if (!completionEvent) {
-      await prisma.scene.update({
-        where: { id: sceneId },
-        data: { status: "PREVIEW_FAILED", ltxRequestId: null },
-      });
-      throw new Error(`LTX preview job ${ltxRequestId} timed out after 3 minutes`);
-    }
-
-    // Step 5: Save the draft video URL and mark the scene preview-ready.
+    // Step 2: Save the draft video URL and mark the scene preview-ready.
     await step.run("save-preview", async () => {
       await prisma.scene.update({
         where: { id: sceneId },
         data: {
-          previewVideoUrl: completionEvent.data.videoUrl as string,
+          previewVideoUrl,
           status: "PREVIEW_READY",
           ltxRequestId: null,
         },
       });
     });
 
-    return {
-      sceneId,
-      previewVideoUrl: completionEvent.data.videoUrl as string,
-    };
+    return { sceneId, previewVideoUrl };
   }
 );

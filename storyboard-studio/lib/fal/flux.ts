@@ -15,7 +15,7 @@ export interface FluxKontextOutput {
   }>;
 }
 
-const FLUX_MODEL_ID = "fal-ai/flux-pro/kontext/max";
+const FLUX_MODEL_ID = "fal-ai/flux-pro/kontext";
 const MAX_POLL_ATTEMPTS = 30;
 const POLL_INTERVAL_MS = 3000;
 

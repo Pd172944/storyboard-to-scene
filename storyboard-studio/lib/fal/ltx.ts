@@ -2,6 +2,13 @@ import { fal } from "@/lib/fal/client";
 
 const LTX_MODEL_ID = "fal-ai/ltx-video/image-to-video";
 
+const MAX_POLL_ATTEMPTS = 72; // 6 minutes at 5s intervals
+const POLL_INTERVAL_MS = 5000;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 interface LtxInput {
   image_url: string;
   prompt: string;
@@ -30,17 +37,14 @@ interface LtxStatusResult {
  * Submit an LTX-Video image-to-video draft job.
  *
  * LTX is the fast draft stage — 480p, low inference steps, generates in 3–8s.
- * Uses webhook for completion notification (non-blocking).
  *
  * @param imageUrl - fal CDN URL of the photorealistic start frame (from Flux)
  * @param motionPrompt - scene description / motion prompt
- * @param webhookUrl - URL to receive the completion notification from fal
  * @returns The request_id for this job
  */
 export async function submitLtxJob(
   imageUrl: string,
-  motionPrompt: string,
-  webhookUrl: string
+  motionPrompt: string
 ): Promise<string> {
   const { request_id } = await fal.queue.submit(LTX_MODEL_ID, {
     input: {
@@ -52,7 +56,6 @@ export async function submitLtxJob(
       guidance_scale: 3.0,
       resolution: "480p",       // draft quality — prioritize speed
     } as LtxInput,
-    webhookUrl,
   });
 
   if (!request_id) {
@@ -60,6 +63,25 @@ export async function submitLtxJob(
   }
 
   return request_id;
+}
+
+/**
+ * Poll until the LTX job completes and return the video URL.
+ *
+ * Polls every 5 seconds for up to 6 minutes. LTX typically finishes in 5–30s.
+ */
+export async function waitForLtxCompletion(requestId: string): Promise<string> {
+  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+    await sleep(POLL_INTERVAL_MS);
+    const result = await getLtxStatus(requestId);
+    if (result.status === "COMPLETED" && result.videoUrl) {
+      return result.videoUrl;
+    }
+    if (result.status === "FAILED") {
+      throw new Error(`LTX job ${requestId} failed`);
+    }
+  }
+  throw new Error(`LTX job ${requestId} timed out after ${MAX_POLL_ATTEMPTS} poll attempts`);
 }
 
 /**
