@@ -4,9 +4,7 @@ import {
   setJobState,
   deleteJobState,
 } from "@/lib/redis";
-import { upsampleSketch } from "@/lib/fal/flux";
-import { submitKlingJob, waitForKlingCompletion, createKlingVoice } from "@/lib/fal/kling";
-import { synthesizeDialogue } from "@/lib/fal/chatterbox";
+import { getMediaProvider } from "@/lib/media/provider";
 
 interface GenerateSceneEventData {
   sceneId: string;
@@ -33,6 +31,7 @@ export const generateScene = inngest.createFunction(
       dialogue,
       voiceSampleUrl,
     } = event.data as GenerateSceneEventData;
+    const media = getMediaProvider();
 
     const now = Date.now();
     const sketchUrl = sketchDataUrl;
@@ -84,7 +83,11 @@ export const generateScene = inngest.createFunction(
 
         // Use first character ref as identity anchor; fall back to sketch if none
         const primaryRef = characterRefUrls.length > 0 ? characterRefUrls[0] : undefined;
-        const url = await upsampleSketch(sketchUrl, motionPrompt, primaryRef);
+        const url = await media.generateFinalFrame({
+          sketchUrl,
+          motionPrompt,
+          characterRefUrl: primaryRef,
+        });
 
         await prisma.scene.update({
           where: { id: sceneId },
@@ -99,7 +102,7 @@ export const generateScene = inngest.createFunction(
         if (!dialogue?.trim()) return null;
 
         try {
-          const wavUrl = await synthesizeDialogue(dialogue, voiceSampleUrl);
+          const wavUrl = await media.synthesizeDialogue(dialogue, voiceSampleUrl);
           return wavUrl;
         } catch (err) {
           // Voice failure is non-fatal — log and continue without audio
@@ -130,7 +133,7 @@ export const generateScene = inngest.createFunction(
         }
 
         // Create a new Voice ID from the synthesized WAV
-        const id = await createKlingVoice(voiceWavUrl, `project-${projectId}`);
+        const id = await media.createVoice(voiceWavUrl, `project-${projectId}`);
 
         await prisma.project.update({
           where: { id: projectId },
@@ -155,23 +158,23 @@ export const generateScene = inngest.createFunction(
         data: { status: "GENERATING_VIDEO" },
       });
 
-      const requestId = await submitKlingJob(
-        uprenderUrl,
+      const job = await media.submitFinalVideo({
+        imageUrl: uprenderUrl,
         motionPrompt,
-        characterRefUrls.length > 0 ? characterRefUrls : undefined,
-        voiceId ?? undefined
-      );
+        characterRefUrls: characterRefUrls.length > 0 ? characterRefUrls : undefined,
+        voiceId: voiceId ?? undefined,
+      });
 
       await setJobState(sceneId, {
         sceneId,
-        klingRequestId: requestId,
+        klingRequestId: job.requestId,
         step: "generating_video",
         startedAt: now,
         heartbeatAt: Date.now(),
       });
 
       // Poll until the video is ready (up to ~10 minutes)
-      const url = await waitForKlingCompletion(requestId);
+      const url = await media.waitForFinalVideo(job);
       return url;
     });
 

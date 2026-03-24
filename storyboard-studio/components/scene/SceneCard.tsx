@@ -15,6 +15,47 @@ const sceneFormSchema = z.object({
   motionPrompt: z.string().min(1, "Motion prompt is required").max(2000),
 });
 
+const PROMPT_BOARDS = [
+  {
+    label: "Shot Language",
+    helper: "Anchor the framing and lens intent.",
+    options: [
+      "wide establishing frame with architectural depth",
+      "tight close-up with shallow depth of field",
+      "medium tracking shot at shoulder height",
+      "low-angle hero frame with strong foreground separation",
+    ],
+  },
+  {
+    label: "Motion",
+    helper: "Describe what the camera and subject actually do.",
+    options: [
+      "slow push-in while the subject locks eye contact",
+      "gentle handheld drift with natural body motion",
+      "controlled dolly left as the subject turns",
+      "subtle pause, then a decisive step forward",
+    ],
+  },
+  {
+    label: "Atmosphere",
+    helper: "Tell the model what kind of world it should feel like.",
+    options: [
+      "soft overcast daylight with realistic skin tones",
+      "golden-hour warmth with cinematic contrast",
+      "rain-soaked night reflections and practical street lights",
+      "quiet interior ambience with natural window light",
+    ],
+  },
+];
+
+function appendPromptSegment(currentPrompt: string, segment: string): string {
+  const trimmed = currentPrompt.trim();
+  if (!trimmed) return segment;
+  if (trimmed.toLowerCase().includes(segment.toLowerCase())) return trimmed;
+  const suffix = /[.!?]$/.test(trimmed) ? " " : ". ";
+  return `${trimmed}${suffix}${segment}`;
+}
+
 export interface SceneFormData {
   title: string;
   motionPrompt: string;
@@ -22,9 +63,9 @@ export interface SceneFormData {
 }
 
 interface SceneCardProps {
-  onPreview: (data: SceneFormData) => Promise<void>;   // Phase 4: creates draft via LTX
-  onRenderFinal?: () => void;                          // Phase 4: approves draft for Kling
-  canRenderFinal?: boolean;                            // enabled once PREVIEW_READY
+  onPreview: (data: SceneFormData) => Promise<void>;
+  onRenderFinal?: () => void;
+  canRenderFinal?: boolean;
   isSubmitting: boolean;
   isApproving?: boolean;
   className?: string;
@@ -70,10 +111,14 @@ export function SceneCard({
     [title, motionPrompt, dialogue, onPreview]
   );
 
+  const handlePromptChip = useCallback((segment: string) => {
+    setMotionPrompt((current) => appendPromptSegment(current, segment));
+  }, []);
+
   return (
     <Card className={className}>
       <CardHeader>
-        <CardTitle>Scene Details</CardTitle>
+        <CardTitle>Scene Blueprint</CardTitle>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -95,15 +140,48 @@ export function SceneCard({
             <Label htmlFor="motion-prompt">Motion Prompt</Label>
             <Textarea
               id="motion-prompt"
-              placeholder="A detective walks slowly through a rain-soaked alley, looking left and right"
+              placeholder="A woman steps into a rain-soaked alley, pauses under flickering neon, then turns toward camera as the lens slowly pushes in"
               value={motionPrompt}
               onChange={(e) => setMotionPrompt(e.target.value)}
               disabled={isSubmitting}
-              rows={3}
+              rows={5}
             />
             {errors.motionPrompt && (
               <p className="text-xs text-red-400">{errors.motionPrompt}</p>
             )}
+            <p className="text-[11px] text-gray-500">
+              Strong prompts describe framing, physical action, and lighting. Keep it cinematic and concrete.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            {PROMPT_BOARDS.map((board) => (
+              <div
+                key={board.label}
+                className="rounded-2xl border border-white/10 bg-black/20 p-3"
+              >
+                <div className="mb-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-200/75">
+                    {board.label}
+                  </p>
+                  <p className="mt-1 text-[11px] leading-5 text-gray-500">
+                    {board.helper}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {board.options.map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => handlePromptChip(option)}
+                      className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 transition hover:border-amber-300/40 hover:bg-amber-300/10 hover:text-amber-50"
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
 
           <DialogueInput
@@ -112,9 +190,7 @@ export function SceneCard({
             disabled={isSubmitting}
           />
 
-          {/* Two-stage buttons */}
           <div className="flex gap-2">
-            {/* Preview — fast LTX draft */}
             <Button
               type="submit"
               size="lg"
@@ -131,12 +207,11 @@ export function SceneCard({
                 <>
                   <Eye className="mr-2 h-4 w-4" />
                   Preview
-                  <span className="ml-1.5 text-[10px] opacity-60">~5s</span>
+                  <span className="ml-1.5 text-[10px] opacity-60">~35s</span>
                 </>
               )}
             </Button>
 
-            {/* Render Final — full Kling quality */}
             <Button
               type="button"
               size="lg"

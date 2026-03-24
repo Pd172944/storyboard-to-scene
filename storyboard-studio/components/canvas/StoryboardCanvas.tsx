@@ -15,9 +15,11 @@ import { cn } from "@/lib/utils";
 
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 450;
-const GRID_SIZE = 25;
-const GRID_COLOR = "#2a2a4a";
-const BACKGROUND_COLOR = "#1a1a2e";
+const GRID_SIZE = 40;
+const GRID_COLOR = "rgba(255,255,255,0.06)";
+const GUIDE_COLOR = "rgba(210,255,114,0.20)";
+const SAFE_FRAME_COLOR = "rgba(255,179,107,0.22)";
+const BACKGROUND_COLOR = "#0c1714";
 
 export interface StoryboardCanvasHandle {
   getSketchDataUrl: () => string;
@@ -72,10 +74,17 @@ const StoryboardCanvas = forwardRef<
     });
   }
 
+  const thirds = [
+    [CANVAS_WIDTH / 3, 0, CANVAS_WIDTH / 3, CANVAS_HEIGHT],
+    [(CANVAS_WIDTH / 3) * 2, 0, (CANVAS_WIDTH / 3) * 2, CANVAS_HEIGHT],
+    [0, CANVAS_HEIGHT / 3, CANVAS_WIDTH, CANVAS_HEIGHT / 3],
+    [0, (CANVAS_HEIGHT / 3) * 2, CANVAS_WIDTH, (CANVAS_HEIGHT / 3) * 2],
+  ];
+
   return (
     <div className={cn("relative", className)}>
       {/* Tool bar overlay */}
-      <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-lg border border-gray-700 bg-gray-900/90 p-1 backdrop-blur-sm">
+      <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded-full border border-white/10 bg-black/55 p-1.5 backdrop-blur-md">
         <Button
           variant={tool === "pencil" ? "default" : "ghost"}
           size="sm"
@@ -111,8 +120,12 @@ const StoryboardCanvas = forwardRef<
         </Button>
       </div>
 
+      <div className="absolute right-3 top-3 z-10 rounded-full border border-white/10 bg-black/45 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)] backdrop-blur-md">
+        Live Board 16:9
+      </div>
+
       {/* Canvas */}
-      <div className="overflow-hidden rounded-xl border border-gray-700">
+      <div className="overflow-hidden rounded-[28px] border border-white/10 shadow-[0_32px_90px_rgba(0,0,0,0.28)]">
         <Stage
           ref={stageRef}
           width={CANVAS_WIDTH}
@@ -143,6 +156,26 @@ const StoryboardCanvas = forwardRef<
                 listening={false}
               />
             ))}
+            {thirds.map((points, index) => (
+              <Line
+                key={`third-${index}`}
+                points={points}
+                stroke={GUIDE_COLOR}
+                strokeWidth={1}
+                dash={[8, 8]}
+                listening={false}
+              />
+            ))}
+            <Rect
+              x={32}
+              y={24}
+              width={CANVAS_WIDTH - 64}
+              height={CANVAS_HEIGHT - 48}
+              stroke={SAFE_FRAME_COLOR}
+              strokeWidth={1}
+              dash={[10, 10]}
+              listening={false}
+            />
           </Layer>
 
           {/* Drawing layer */}
@@ -163,6 +196,10 @@ const StoryboardCanvas = forwardRef<
             ))}
           </Layer>
         </Stage>
+      </div>
+
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-full border border-white/10 bg-black/45 px-3 py-1.5 text-[11px] text-[var(--text-secondary)] backdrop-blur-md">
+        Use the thirds grid to stage your hero, then add motion in the prompt composer below.
       </div>
     </div>
   );

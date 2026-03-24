@@ -4,21 +4,12 @@ import { useRef, useState, useCallback } from "react";
 import { Play, Pause, Maximize2, Download, Loader2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-
-type SceneStatus =
-  | "PENDING"
-  | "UPLOADING"
-  | "PREVIEWING"
-  | "PREVIEW_READY"
-  | "PREVIEW_FAILED"
-  | "UPRENDERING"
-  | "GENERATING_VIDEO"
-  | "COMPLETE"
-  | "FAILED";
+import type { SceneStatus } from "@/lib/studio/status";
 
 interface VideoPlayerProps {
   videoUrl?: string | null;
   previewVideoUrl?: string | null;
+  previewFrameUrl?: string | null;
   sceneStatus: SceneStatus;
   onRenderFinal?: () => void;
   isApproving?: boolean;
@@ -114,6 +105,7 @@ function VideoCore({
 export function VideoPlayer({
   videoUrl,
   previewVideoUrl,
+  previewFrameUrl,
   sceneStatus,
   onRenderFinal,
   isApproving = false,
@@ -126,14 +118,25 @@ export function VideoPlayer({
 
       {/* ── PREVIEWING — skeleton shimmer ─────────────────────────────────── */}
       {sceneStatus === "PREVIEWING" && (
-        <div className="relative overflow-hidden rounded-xl border border-gray-700 bg-gray-900 aspect-video flex flex-col items-center justify-center gap-3">
-          {/* Shimmer sweep */}
-          <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/5 to-transparent" />
-          <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
-          <p className="text-sm font-medium text-gray-300">Generating preview…</p>
-          <span className="rounded-full bg-indigo-500/20 px-2.5 py-0.5 text-xs text-indigo-300 font-medium">
-            ~5 seconds
-          </span>
+        <div className="relative overflow-hidden rounded-xl border border-gray-700 bg-gray-900 aspect-video">
+          {previewFrameUrl ? (
+            <img
+              src={previewFrameUrl}
+              alt="Photoreal preview frame"
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/5 to-transparent" />
+          )}
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/45">
+            <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
+            <p className="text-sm font-medium text-gray-200">
+              {previewFrameUrl ? "Animating preview…" : "Building preview frame…"}
+            </p>
+            <span className="rounded-full bg-indigo-500/20 px-2.5 py-0.5 text-xs text-indigo-200 font-medium">
+              {previewFrameUrl ? "Another ~10-15 seconds" : "~30-40 seconds total"}
+            </span>
+          </div>
         </div>
       )}
 
@@ -164,25 +167,64 @@ export function VideoPlayer({
         </div>
       )}
 
+      {sceneStatus === "PREVIEW_READY" && !previewVideoUrl && previewFrameUrl && (
+        <div className="relative rounded-xl ring-2 ring-amber-400/40 ring-offset-1 ring-offset-gray-950 overflow-hidden border border-gray-700 bg-black">
+          <img
+            src={previewFrameUrl}
+            alt="Preview frame"
+            className="h-auto w-full"
+          />
+          <span className="absolute left-2 top-2 rounded-md bg-amber-400/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-900">
+            Preview Frame
+          </span>
+          <div className="absolute bottom-3 right-3">
+            <Button
+              size="sm"
+              onClick={onRenderFinal}
+              disabled={isApproving}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg"
+            >
+              {isApproving ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Zap className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Render Final
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* ── PREVIEW_FAILED — error with bypass option ──────────────────────── */}
       {sceneStatus === "PREVIEW_FAILED" && (
-        <div className="overflow-hidden rounded-xl border border-red-500/30 bg-red-500/10 p-6 flex flex-col items-center gap-4">
-          <p className="text-sm text-red-300 text-center">
-            Preview generation failed — you can still render the final version directly.
-          </p>
-          <Button
-            size="sm"
-            onClick={onRenderFinal}
-            disabled={isApproving}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white"
-          >
-            {isApproving ? (
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Zap className="mr-1.5 h-3.5 w-3.5" />
-            )}
-            Render Final anyway
-          </Button>
+        <div className="space-y-3">
+          {previewFrameUrl && (
+            <div className="overflow-hidden rounded-xl border border-gray-700 bg-black">
+              <img
+                src={previewFrameUrl}
+                alt="Preview frame"
+                className="h-auto w-full"
+              />
+            </div>
+          )}
+          <div className="overflow-hidden rounded-xl border border-red-500/30 bg-red-500/10 p-6 flex flex-col items-center gap-4">
+            <p className="text-sm text-red-300 text-center">
+              Draft video generation failed. The preview frame is still usable, and you can send the scene through the full render path.
+            </p>
+            <Button
+              size="sm"
+              onClick={onRenderFinal}
+              disabled={isApproving}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white"
+            >
+              {isApproving ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Zap className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Render Final anyway
+            </Button>
+          </div>
         </div>
       )}
 

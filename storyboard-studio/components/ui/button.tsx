@@ -13,20 +13,20 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         disabled={disabled}
         className={cn(
-          "inline-flex items-center justify-center rounded-lg font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-950 disabled:pointer-events-none disabled:opacity-50",
+          "inline-flex items-center justify-center rounded-full font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-50",
           {
-            "bg-indigo-600 text-white hover:bg-indigo-500":
+            "bg-[var(--accent)] text-[#08120f] shadow-[0_12px_32px_rgba(210,255,114,0.22)] hover:-translate-y-0.5 hover:bg-[#e3ff9b]":
               variant === "default",
-            "border border-gray-700 bg-transparent text-gray-100 hover:bg-gray-800":
+            "border border-[var(--line)] bg-white/[0.03] text-[var(--text-primary)] hover:border-[var(--line-strong)] hover:bg-white/[0.06]":
               variant === "outline",
-            "bg-transparent text-gray-100 hover:bg-gray-800":
+            "bg-transparent text-[var(--text-secondary)] hover:bg-white/[0.05] hover:text-[var(--text-primary)]":
               variant === "ghost",
-            "bg-red-600 text-white hover:bg-red-500":
+            "bg-[#d94f4f] text-white hover:bg-[#ea6565]":
               variant === "destructive",
           },
           {
             "h-8 px-3 text-sm": size === "sm",
-            "h-10 px-4 text-sm": size === "md",
+            "h-11 px-5 text-sm": size === "md",
             "h-12 px-6 text-base": size === "lg",
           },
           className
