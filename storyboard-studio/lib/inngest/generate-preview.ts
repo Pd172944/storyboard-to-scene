@@ -1,6 +1,6 @@
 import { inngest } from "@/lib/inngest/client";
 import { prisma } from "@/lib/db";
-import { submitLtxJob, waitForLtxCompletion } from "@/lib/fal/ltx";
+import { getMediaProvider } from "@/lib/media/provider";
 
 interface PreviewGenerateEventData {
   sceneId: string;
@@ -10,48 +10,93 @@ interface PreviewGenerateEventData {
 }
 
 /**
- * Draft preview workflow — intentionally lean, speed is the only goal.
+ * Draft preview workflow.
  *
- * Passes the sketch directly to LTX — no Flux uprender for drafts.
- * Flux only runs once, during the final render (generate-scene.ts), where
- * the uprenderUrl is then cached and reused for any subsequent re-renders.
+ * Generates a photoreal preview frame first, then animates it into a short
+ * draft video. This keeps the preview path fast enough for iteration while
+ * avoiding the low-quality animated look of sketch-to-video directly.
  *
- * Pipeline: submit-ltx (sketch → video) → save-preview
- *
- * LTX generates a low-quality 480p draft in 5–30s so users can verify
- * motion and composition before committing to the 60–90 second Kling final render.
+ * Pipeline: fast preview frame -> submit-ltx(frame) -> save-preview
  */
 export const generatePreview = inngest.createFunction(
   {
     id: "generate-preview",
     retries: 1, // drafts should be fast or fail fast
     cancelOn: [{ event: "studio/scene.cancel", match: "data.sceneId" }],
+    onFailure: async ({ event, error }) => {
+      const { sceneId } = event.data.event.data as PreviewGenerateEventData;
+      console.error(`[generate-preview] Failed for scene ${sceneId}:`, error);
+      await prisma.scene.update({
+        where: { id: sceneId },
+        data: { status: "PREVIEW_FAILED", ltxRequestId: null },
+      });
+    },
   },
   { event: "studio/preview.generate" },
   async ({ event, step }) => {
-    const { sceneId, sketchDataUrl, motionPrompt } =
+    const { sceneId, sketchDataUrl, motionPrompt, projectId } =
       event.data as PreviewGenerateEventData;
+    const media = getMediaProvider();
 
-    // Step 1: Submit LTX job directly with the sketch.
-    // No Flux uprender for drafts — sketch quality is fine for motion preview.
-    const previewVideoUrl = await step.run("generate-ltx-draft", async () => {
+    const characterRefUrls = await step.run("fetch-character-refs", async () => {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { characterRefUrls: true },
+      });
+      return project?.characterRefUrls ?? [];
+    });
+
+    const primaryRef = characterRefUrls.length > 0 ? characterRefUrls[0] : undefined;
+
+    await step.run("mark-previewing", async () => {
       await prisma.scene.update({
         where: { id: sceneId },
-        data: { status: "PREVIEWING" },
+        data: {
+          status: "PREVIEWING",
+          referenceImageUrl: null,
+          previewVideoUrl: null,
+          ltxRequestId: null,
+          uprenderUrl: null,
+        },
       });
+    });
 
-      const requestId = await submitLtxJob(sketchDataUrl, motionPrompt);
+    // Step 1: Build a high-quality photoreal preview frame first.
+    const previewFrameUrl = await step.run("generate-preview-frame", async () => {
+      const imageUrl = await media.generatePreviewFrame({
+        sketchUrl: sketchDataUrl,
+        motionPrompt,
+        characterRefUrl: primaryRef,
+      });
 
       await prisma.scene.update({
         where: { id: sceneId },
-        data: { ltxRequestId: requestId },
+        data: {
+          referenceImageUrl: imageUrl,
+          uprenderUrl: imageUrl,
+        },
       });
 
-      const videoUrl = await waitForLtxCompletion(requestId);
+      return imageUrl;
+    });
+
+    // Step 2: Animate the preview frame into a short video draft.
+    const previewVideoUrl = await step.run("animate-preview-frame", async () => {
+      const job = await media.submitDraftVideo({
+        imageUrl: previewFrameUrl,
+        motionPrompt,
+      });
+
+      await prisma.scene.update({
+        where: { id: sceneId },
+        data: { ltxRequestId: job.requestId ?? null },
+      });
+
+      const videoUrl = await media.waitForDraftVideo(job);
       return videoUrl;
     });
 
-    // Step 2: Save the draft video URL and mark the scene preview-ready.
+    // Step 3: Save the draft video URL and mark the scene preview-ready.
     await step.run("save-preview", async () => {
       await prisma.scene.update({
         where: { id: sceneId },

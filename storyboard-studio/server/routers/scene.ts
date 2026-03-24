@@ -4,8 +4,7 @@ import { router, publicProcedure } from "@/lib/trpc/server";
 import { prisma } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
 import { getJobState } from "@/lib/redis";
-import { fal } from "@/lib/fal/client";
-import { KLING_MODEL_ID } from "@/lib/fal/kling";
+import { getMediaProvider } from "@/lib/media/provider";
 
 export const sceneRouter = router({
   /**
@@ -58,7 +57,8 @@ export const sceneRouter = router({
   /**
    * Submit a scene for draft preview generation via LTX-Video.
    * Fast path — fires the preview workflow, not the Kling workflow.
-   * Flux uprender runs once here; the result is reused for the final render.
+   * The preview first creates a fast photoreal frame, then animates that
+   * frame into a short draft so users can judge realism before final render.
    */
   submitPreview: publicProcedure
     .input(
@@ -98,7 +98,7 @@ export const sceneRouter = router({
   /**
    * Approve a draft preview for final Kling render.
    * Idempotent — safe to call multiple times (second call is a no-op).
-   * Reuses the uprenderUrl already set during the preview stage (Flux runs once total).
+   * Reuses any existing uprenderUrl when available; otherwise Flux runs here.
    */
   approveForRender: publicProcedure
     .input(z.object({ sceneId: z.string().cuid() }))
@@ -148,7 +148,8 @@ export const sceneRouter = router({
       });
 
       // Fire the same Kling workflow as submitScene.
-      // generate-scene.ts will detect the existing uprenderUrl and skip Flux.
+      // generate-scene.ts reuses an existing uprenderUrl when present and
+      // only calls Flux when the scene still needs a prepared start frame.
       await inngest.send({
         name: "studio/scene.generate",
         data: {
@@ -201,6 +202,8 @@ export const sceneRouter = router({
   cancelScene: publicProcedure
     .input(z.object({ sceneId: z.string().cuid() }))
     .mutation(async ({ input }) => {
+      const media = getMediaProvider();
+
       // Fire cancel event to Inngest
       await inngest.send({
         name: "studio/scene.cancel",
@@ -209,11 +212,9 @@ export const sceneRouter = router({
 
       // Try to cancel the Kling job in fal if it's running
       const jobState = await getJobState(input.sceneId);
-      if (jobState?.klingRequestId) {
+      if (jobState?.klingRequestId && media.cancelFinalVideo) {
         try {
-          await fal.queue.cancel(KLING_MODEL_ID, {
-            requestId: jobState.klingRequestId,
-          });
+          await media.cancelFinalVideo(jobState.klingRequestId);
         } catch {
           // Ignore cancel errors — the job may already be complete
         }
@@ -233,6 +234,8 @@ export const sceneRouter = router({
   deleteScene: publicProcedure
     .input(z.object({ sceneId: z.string().cuid() }))
     .mutation(async ({ input }) => {
+      const media = getMediaProvider();
+
       // Cancel any running Inngest workflow
       await inngest.send({
         name: "studio/scene.cancel",
@@ -241,11 +244,9 @@ export const sceneRouter = router({
 
       // Try to cancel any active fal job
       const jobState = await getJobState(input.sceneId);
-      if (jobState?.klingRequestId) {
+      if (jobState?.klingRequestId && media.cancelFinalVideo) {
         try {
-          await fal.queue.cancel(KLING_MODEL_ID, {
-            requestId: jobState.klingRequestId,
-          });
+          await media.cancelFinalVideo(jobState.klingRequestId);
         } catch {
           // Ignore — job may already be done
         }

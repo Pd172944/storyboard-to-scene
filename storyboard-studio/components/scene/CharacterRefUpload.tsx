@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc/client";
-
-type CharacterReelStatus = "NONE" | "PENDING" | "GENERATING" | "COMPLETE" | "FAILED";
+import { uploadFileToFalStorage } from "@/lib/fal/storage";
+import type { CharacterReelStatus } from "@/lib/studio/status";
 
 const MAX_IMAGES = 3;
 
@@ -65,38 +65,6 @@ export function CharacterRefUpload({
     }
   }, [reelStatusQuery.data]);
 
-  const uploadToFalStorage = useCallback(async (file: File): Promise<string> => {
-    const initiateResp = await fetch("/api/fal/storage/upload/initiate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        file_name: file.name,
-        content_type: file.type,
-      }),
-    });
-
-    if (!initiateResp.ok) {
-      throw new Error("Failed to initiate upload");
-    }
-
-    const { upload_url, file_url } = (await initiateResp.json()) as {
-      upload_url: string;
-      file_url: string;
-    };
-
-    const uploadResp = await fetch(upload_url, {
-      method: "PUT",
-      headers: { "Content-Type": file.type },
-      body: file,
-    });
-
-    if (!uploadResp.ok) {
-      throw new Error("Failed to upload file to storage");
-    }
-
-    return file_url;
-  }, []);
-
   const handleFileSelect = useCallback(
     async (file: File) => {
       if (!file.type.startsWith("image/")) return;
@@ -104,7 +72,7 @@ export function CharacterRefUpload({
 
       setUploading(true);
       try {
-        const url = await uploadToFalStorage(file);
+        const url = await uploadFileToFalStorage(file);
         const newUrls = [...imageUrls, url];
         setImageUrls(newUrls);
 
@@ -122,7 +90,7 @@ export function CharacterRefUpload({
         setUploading(false);
       }
     },
-    [imageUrls, projectId, setCharacterRefsMutation, uploadToFalStorage]
+    [imageUrls, projectId, setCharacterRefsMutation]
   );
 
   const handleRemove = useCallback(

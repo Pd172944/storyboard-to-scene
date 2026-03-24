@@ -16,8 +16,16 @@ export interface FluxKontextOutput {
 }
 
 const FLUX_MODEL_ID = "fal-ai/flux-pro/kontext";
-const MAX_POLL_ATTEMPTS = 30;
+const MAX_POLL_ATTEMPTS = 60; // Increased to 3 minutes to avoid timeout
 const POLL_INTERVAL_MS = 3000;
+
+function getFirstImageUrl(data: unknown): string {
+  const resultImageUrl = (data as FluxKontextOutput | undefined)?.images?.[0]?.url;
+  if (!resultImageUrl) {
+    throw new Error("Flux completed but no image URL was returned");
+  }
+  return resultImageUrl;
+}
 
 /**
  * Uprender a rough sketch into a photorealistic frame using Flux Kontext.
@@ -54,12 +62,13 @@ Transform the scene and setting around them to match this description: ${scenePr
 Requirements:
 - Character appearance: EXACTLY as shown in the reference photo (do not change face, ethnicity, hair, or clothing)
 - Scene/setting: as described above
-- Style: photorealistic, professional photography, cinematic quality, natural lighting
+- Style: photorealistic, live-action cinema frame, real human skin texture, realistic facial structure, professional photography, cinematic quality, natural lighting
+- Absolutely avoid: animation, cartoon, anime, illustration, painterly, stylized CGI
 - Only one person (the character from the reference) unless the scene description explicitly requires others`;
   } else {
     // No character ref — use sketch as the base for composition guidance
     imageUrl = sketchUrl;
-    prompt = `Transform this rough sketch into a high quality, photorealistic scene. Scene description: ${scenePrompt}. Maintain the exact composition, poses, and layout from the sketch. Make it look like a professional photograph with natural lighting and realistic textures.`;
+    prompt = `Transform this rough sketch into a high quality, photorealistic live-action scene. Scene description: ${scenePrompt}. Maintain the exact composition, poses, and layout from the sketch. Make it look like a frame from a real film shot with a camera. The people must look like real human beings with natural skin texture, realistic facial features, and believable clothing. No animation, cartoon, anime, illustration, painterly, or stylized CGI look.`;
   }
 
   const { request_id } = await fal.queue.submit(FLUX_MODEL_ID, {
@@ -87,20 +96,21 @@ Requirements:
         requestId: request_id,
       });
 
-      const data = result.data as unknown as FluxKontextOutput;
-      const resultImageUrl = data?.images?.[0]?.url;
-      if (!resultImageUrl) {
-        throw new Error(
-          "Flux Kontext completed but no image URL in response"
-        );
-      }
-      return resultImageUrl;
+      return getFirstImageUrl(result.data);
     }
   }
 
   throw new Error(
     `Flux Kontext job ${request_id} timed out after ${MAX_POLL_ATTEMPTS} attempts`
   );
+}
+
+export async function generatePreviewFrame(
+  sketchUrl: string,
+  scenePrompt: string,
+  characterRefUrl?: string
+): Promise<string> {
+  return upsampleSketch(sketchUrl, scenePrompt, characterRefUrl);
 }
 
 function sleep(ms: number): Promise<void> {

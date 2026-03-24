@@ -3,30 +3,125 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --bg: #07110f;
+    --bg-elevated: rgba(11, 24, 21, 0.84);
+    --panel: rgba(15, 29, 26, 0.78);
+    --panel-strong: rgba(15, 24, 21, 0.96);
+    --line: rgba(207, 220, 214, 0.14);
+    --line-strong: rgba(207, 220, 214, 0.24);
+    --text-primary: #f4f4ee;
+    --text-secondary: #c8cdc7;
+    --text-muted: #82908a;
+    --accent: #d2ff72;
+    --accent-deep: #92c93b;
+    --accent-warm: #ffb36b;
+    --shadow-soft: 0 24px 80px rgba(0, 0, 0, 0.24);
+  }
+
   *,
   *::before,
   *::after {
     box-sizing: border-box;
   }
 
-  body {
-    @apply bg-gray-950 text-gray-100;
+  html {
+    scroll-behavior: smooth;
   }
 
-  /* Custom scrollbar for the dark theme */
+  body {
+    background:
+      radial-gradient(circle at top left, rgba(210, 255, 114, 0.12), transparent 28%),
+      radial-gradient(circle at top right, rgba(255, 179, 107, 0.14), transparent 24%),
+      radial-gradient(circle at 20% 90%, rgba(125, 229, 195, 0.08), transparent 26%),
+      linear-gradient(180deg, #07110f 0%, #091513 100%);
+    color: var(--text-primary);
+    font-family: var(--font-sans), sans-serif;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+    background-size: 90px 90px;
+    mask-image: radial-gradient(circle at center, black, transparent 80%);
+    opacity: 0.55;
+  }
+
+  ::selection {
+    background: rgba(210, 255, 114, 0.28);
+    color: #04110e;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    letter-spacing: -0.02em;
+  }
+
+  .font-display {
+    font-family: var(--font-display), serif;
+  }
+
   ::-webkit-scrollbar {
     width: 8px;
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-gray-900;
+    background: rgba(8, 16, 14, 0.95);
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply rounded-full bg-gray-700;
+    background: rgba(210, 255, 114, 0.18);
+    border-radius: 9999px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-gray-600;
+    background: rgba(210, 255, 114, 0.3);
+  }
+}
+
+@layer utilities {
+  .surface-panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow-soft);
+    backdrop-filter: blur(22px);
+  }
+
+  .surface-panel-strong {
+    background: var(--panel-strong);
+    border: 1px solid var(--line-strong);
+    box-shadow: var(--shadow-soft);
+    backdrop-filter: blur(18px);
+  }
+
+  .eyebrow {
+    font-size: 0.72rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: rgba(210, 255, 114, 0.82);
+  }
+
+  .text-muted {
+    color: var(--text-muted);
+  }
+
+  .animate-shimmer {
+    animation: shimmer 1.8s linear infinite;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
   }
 }

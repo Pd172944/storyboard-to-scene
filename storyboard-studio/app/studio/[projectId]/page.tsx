@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Film, Loader2, RefreshCw, Trash2, User } from "lucide-react";
+import { ArrowLeft, Film, Loader2, Trash2, User } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@/server/routers/_app";
@@ -12,7 +12,14 @@ import type { StoryboardCanvasHandle } from "@/components/canvas/StoryboardCanva
 import { SceneCard, type SceneFormData } from "@/components/scene/SceneCard";
 import { CharacterRefUpload } from "@/components/scene/CharacterRefUpload";
 import { VoiceSampleUpload } from "@/components/scene/VoiceSampleUpload";
-import { cn } from "@/lib/utils";
+import { dataUrlToPngFile, uploadFileToFalStorage } from "@/lib/fal/storage";
+import {
+  canRenderFinal,
+  getSceneStage,
+  type CharacterReelStatus,
+  type SceneStatus,
+  type VoiceStatus,
+} from "@/lib/studio/status";
 
 const StoryboardCanvas = dynamic(
   () => import("@/components/canvas/StoryboardCanvas").then((mod) => mod.StoryboardCanvas),
@@ -34,19 +41,6 @@ import { VideoPlayer } from "@/components/player/VideoPlayer";
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type ProjectScene = RouterOutputs["project"]["getProject"]["scenes"][number];
 
-type SceneStatus =
-  | "PENDING"
-  | "UPLOADING"
-  | "PREVIEWING"
-  | "PREVIEW_READY"
-  | "PREVIEW_FAILED"
-  | "UPRENDERING"
-  | "GENERATING_VIDEO"
-  | "COMPLETE"
-  | "FAILED";
-
-type CharacterReelStatus = "NONE" | "PENDING" | "GENERATING" | "COMPLETE" | "FAILED";
-
 export default function StudioPage() {
   const params = useParams();
   const router = useRouter();
@@ -64,7 +58,8 @@ export default function StudioPage() {
     { enabled: !!projectId }
   );
 
-  // Poll scene status — 2s during draft (LTX is fast), 3s during final
+  // Poll scene status aggressively during the draft path so the preview shows
+  // up as soon as the fast LTX job completes.
   const sceneStatusQuery = trpc.scene.getSceneStatus.useQuery(
     { sceneId: activeSceneId! },
     {
@@ -73,14 +68,12 @@ export default function StudioPage() {
         const status = query.state.data?.status;
         if (status === "COMPLETE" || status === "FAILED") return false;
         if (status === "PREVIEW_READY" || status === "PREVIEW_FAILED") return false;
-        // 2s during draft stage — catch LTX completing quickly
         if (status === "PREVIEWING") return 2000;
         return 3000;
       },
     }
   );
 
-  const submitSceneMutation = trpc.scene.submitScene.useMutation();
   const submitPreviewMutation = trpc.scene.submitPreview.useMutation();
   const approveForRenderMutation = trpc.scene.approveForRender.useMutation();
   const deleteSceneMutation = trpc.scene.deleteScene.useMutation({
@@ -122,51 +115,13 @@ export default function StudioPage() {
   );
 
   const voiceSampleUrl = voiceStatusQuery.data?.voiceSampleUrl ?? null;
-  const voiceStatus = voiceStatusQuery.data?.voiceStatus ?? "NONE";
+  const voiceStatus = (voiceStatusQuery.data?.voiceStatus ?? "NONE") as VoiceStatus;
 
   // Upload a data URL (canvas export) to fal storage via presigned URL
   const uploadSketch = useCallback(
     async (dataUrl: string): Promise<string> => {
-      // Convert data URL to a File
-      const resp = await fetch(dataUrl);
-      const blob = await resp.blob();
-      const file = new File([blob], `sketch-${Date.now()}.png`, {
-        type: "image/png",
-      });
-
-      // Step 1: Get presigned upload URL
-      const initiateResp = await fetch("/api/fal/storage/upload/initiate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_name: file.name,
-          content_type: file.type,
-        }),
-      });
-
-      if (!initiateResp.ok) {
-        const errBody = await initiateResp.text();
-        console.error("Initiate sketch upload failed:", errBody);
-        throw new Error("Failed to initiate sketch upload");
-      }
-
-      const { upload_url, file_url } = (await initiateResp.json()) as {
-        upload_url: string;
-        file_url: string;
-      };
-
-      // Step 2: PUT file to presigned URL
-      const uploadResp = await fetch(upload_url, {
-        method: "PUT",
-        headers: { "Content-Type": file.type },
-        body: file,
-      });
-
-      if (!uploadResp.ok) {
-        throw new Error("Failed to upload sketch to storage");
-      }
-
-      return file_url;
+      const file = await dataUrlToPngFile(dataUrl, `sketch-${Date.now()}.png`);
+      return uploadFileToFalStorage(file);
     },
     []
   );
@@ -191,13 +146,14 @@ export default function StudioPage() {
 
         setActiveDialogue(data.dialogue ?? "");
         setActiveSceneId(result.sceneId);
+        void projectQuery.refetch();
       } catch (error) {
         console.error("Failed to submit preview:", error);
       } finally {
         setIsSubmitting(false);
       }
     },
-    [projectId, submitPreviewMutation, uploadSketch]
+    [projectId, projectQuery, submitPreviewMutation, uploadSketch]
   );
 
   // Phase 4: Approve draft for final Kling render
@@ -232,26 +188,10 @@ export default function StudioPage() {
   const videoUrl = sceneStatusQuery.data?.videoUrl;
   const uprenderUrl = sceneStatusQuery.data?.uprenderUrl;
   const previewVideoUrl = sceneStatusQuery.data?.previewVideoUrl;
+  const previewFrameUrl = sceneStatusQuery.data?.referenceImageUrl;
 
-  // Derived stage for JobStatusBoard
-  const stage: "draft" | "final" | "idle" =
-    sceneStatus && ["PREVIEWING", "PREVIEW_READY", "PREVIEW_FAILED"].includes(sceneStatus)
-      ? "draft"
-      : sceneStatus && ["UPRENDERING", "GENERATING_VIDEO", "COMPLETE", "FAILED"].includes(sceneStatus)
-      ? "final"
-      : "idle";
-
-  const canRenderFinal =
-    sceneStatus === "PREVIEW_READY" || sceneStatus === "PREVIEW_FAILED";
-
-  const isJobActive =
-    activeSceneId &&
-    sceneStatus &&
-    sceneStatus !== "COMPLETE" &&
-    sceneStatus !== "FAILED" &&
-    sceneStatus !== "PENDING" &&
-    sceneStatus !== "PREVIEW_READY" &&
-    sceneStatus !== "PREVIEW_FAILED";
+  const stage = getSceneStage(sceneStatus);
+  const canRenderFinalAction = canRenderFinal(sceneStatus);
 
   if (projectQuery.isLoading) {
     return (
@@ -274,37 +214,45 @@ export default function StudioPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950">
+    <div className="min-h-screen bg-[var(--bg)]">
       {/* Top bar */}
-      <header className="flex items-center gap-4 border-b border-gray-800 px-6 py-3">
+      <header className="mx-4 mt-4 flex items-center justify-between rounded-[28px] border border-white/10 bg-black/35 px-5 py-4 backdrop-blur-xl md:mx-6">
         <Button variant="ghost" size="sm" onClick={() => router.push("/")}>
           <ArrowLeft className="mr-2 h-4 w-4" />
           Projects
         </Button>
-        <div className="flex items-center gap-2">
-          <Film className="h-5 w-5 text-indigo-500" />
-          <h1 className="text-lg font-semibold text-gray-100">
-            {projectQuery.data?.title ?? "Untitled"}
-          </h1>
+        <div className="flex items-center gap-3">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3">
+            <Film className="h-5 w-5 text-[var(--accent)]" />
+          </div>
+          <div>
+            <p className="eyebrow">Studio</p>
+            <h1 className="text-lg font-semibold text-[var(--text-primary)]">
+              {projectQuery.data?.title ?? "Untitled"}
+            </h1>
+          </div>
+        </div>
+        <div className="hidden rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-[var(--text-secondary)] md:block">
+          Photoreal previews, identity-locked renders
         </div>
       </header>
 
       {/* Main layout */}
-      <div className="flex h-[calc(100vh-57px)]">
+      <div className="flex h-[calc(100vh-105px)] gap-4 px-4 py-4 md:px-6">
         {/* Left panel: Canvas + Character Panel + Scene Card */}
-        <div className="flex w-[60%] flex-col gap-4 overflow-y-auto border-r border-gray-800 p-6">
+        <div className="flex w-[60%] flex-col gap-4 overflow-y-auto rounded-[32px] border border-white/10 bg-black/20 p-6 backdrop-blur-xl">
           <StoryboardCanvas ref={canvasRef} />
 
           {/* Character reference panel */}
-          <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4 space-y-3">
+          <div className="rounded-[28px] border border-white/10 bg-white/[0.03] p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <User className="h-4 w-4 text-indigo-400" />
-                <h3 className="text-sm font-semibold text-gray-300">Character Identity</h3>
+                <User className="h-4 w-4 text-[var(--accent)]" />
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Character Identity</h3>
               </div>
               {characterReelStatus === "COMPLETE" && (
                 <span
-                  className="rounded-full px-2 py-0.5 text-[10px] font-medium bg-emerald-500/15 text-emerald-400"
+                  className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300"
                 >
                   Refs ready
                 </span>
@@ -319,7 +267,7 @@ export default function StudioPage() {
               <VoiceSampleUpload
                 projectId={projectId}
                 initialVoiceSampleUrl={voiceSampleUrl}
-                initialVoiceStatus={voiceStatus as "NONE" | "PENDING" | "CREATING" | "READY" | "FAILED"}
+                initialVoiceStatus={voiceStatus}
               />
             </div>
           </div>
@@ -327,20 +275,21 @@ export default function StudioPage() {
           <SceneCard
             onPreview={handlePreview}
             onRenderFinal={handleApproveForRender}
-            canRenderFinal={canRenderFinal}
+            canRenderFinal={canRenderFinalAction}
             isSubmitting={isSubmitting}
             isApproving={isApproving}
           />
         </div>
 
         {/* Right panel: Status / Video */}
-        <div className="flex w-[40%] flex-col gap-6 overflow-y-auto p-6">
+        <div className="flex w-[40%] flex-col gap-6 overflow-y-auto rounded-[32px] border border-white/10 bg-black/20 p-6 backdrop-blur-xl">
           {/* Show status board when a job is active */}
           {activeSceneId && sceneStatus && (
             <div className="space-y-6">
               <JobStatusBoard
                 status={sceneStatus}
                 hasDialogue={!!activeDialogue.trim()}
+                previewFrameReady={!!previewFrameUrl}
                 stage={stage}
               />
 
@@ -348,6 +297,7 @@ export default function StudioPage() {
               <VideoPlayer
                 videoUrl={videoUrl}
                 previewVideoUrl={previewVideoUrl}
+                previewFrameUrl={previewFrameUrl}
                 sceneStatus={sceneStatus}
                 onRenderFinal={handleApproveForRender}
                 isApproving={isApproving}
@@ -390,7 +340,7 @@ export default function StudioPage() {
               <p className="text-center text-sm">
                 Draw your scene, fill in the details, and hit{" "}
                 <span className="text-gray-400">Preview</span> to see a draft
-                in ~5 seconds. Then hit{" "}
+                in about 30-40 seconds. Then choose whether to push it through{" "}
                 <span className="text-indigo-400">Render Final</span> for full
                 quality.
               </p>

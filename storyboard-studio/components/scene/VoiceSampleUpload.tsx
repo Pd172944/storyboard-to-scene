@@ -1,13 +1,13 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { Mic, X, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc/client";
-
-type VoiceStatus = "NONE" | "PENDING" | "CREATING" | "READY" | "FAILED";
+import { uploadFileToFalStorage } from "@/lib/fal/storage";
+import type { VoiceStatus } from "@/lib/studio/status";
 
 interface VoiceSampleUploadProps {
   projectId: string;
@@ -31,37 +31,18 @@ export function VoiceSampleUpload({
 
   const setVoiceSampleMutation = trpc.project.setVoiceSample.useMutation();
 
-  const uploadToFalStorage = useCallback(async (file: File): Promise<string> => {
-    const initiateResp = await fetch("/api/fal/storage/upload/initiate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        file_name: file.name,
-        content_type: file.type,
-      }),
-    });
+  useEffect(() => {
+    setSampleUrl(initialVoiceSampleUrl);
+    setFileName(
+      initialVoiceSampleUrl
+        ? decodeURIComponent(initialVoiceSampleUrl.split("/").pop() ?? "Voice sample")
+        : null
+    );
+  }, [initialVoiceSampleUrl]);
 
-    if (!initiateResp.ok) {
-      throw new Error("Failed to initiate upload");
-    }
-
-    const { upload_url, file_url } = (await initiateResp.json()) as {
-      upload_url: string;
-      file_url: string;
-    };
-
-    const uploadResp = await fetch(upload_url, {
-      method: "PUT",
-      headers: { "Content-Type": file.type },
-      body: file,
-    });
-
-    if (!uploadResp.ok) {
-      throw new Error("Failed to upload audio to storage");
-    }
-
-    return file_url;
-  }, []);
+  useEffect(() => {
+    setVoiceStatus(initialVoiceStatus);
+  }, [initialVoiceStatus]);
 
   const handleFileSelect = useCallback(
     async (file: File) => {
@@ -71,7 +52,7 @@ export function VoiceSampleUpload({
       setShowReplaceWarning(false);
 
       try {
-        const url = await uploadToFalStorage(file);
+        const url = await uploadFileToFalStorage(file);
         setSampleUrl(url);
         setFileName(file.name);
 
@@ -89,7 +70,7 @@ export function VoiceSampleUpload({
         setUploading(false);
       }
     },
-    [projectId, setVoiceSampleMutation, uploadToFalStorage]
+    [projectId, setVoiceSampleMutation]
   );
 
   const handleInputChange = useCallback(

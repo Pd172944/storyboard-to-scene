@@ -2,8 +2,8 @@ import { fal } from "@/lib/fal/client";
 
 const LTX_MODEL_ID = "fal-ai/ltx-video/image-to-video";
 
-const MAX_POLL_ATTEMPTS = 72; // 6 minutes at 5s intervals
-const POLL_INTERVAL_MS = 5000;
+const MAX_POLL_ATTEMPTS = 120; // 4 minutes at 2s intervals
+const POLL_INTERVAL_MS = 2000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -33,28 +33,41 @@ interface LtxStatusResult {
   videoUrl?: string;
 }
 
+type LtxDraftMode = "sketch" | "frame";
+
+function buildDraftPrompt(motionPrompt: string, mode: LtxDraftMode): string {
+  if (mode === "sketch") {
+    return `Generate a fast storyboard draft from this rough sketch. Keep the camera framing, composition, subject placement, and action implied by the sketch. Fill in missing detail only enough to make the motion readable. Prioritize speed and visual clarity over polish. Scene direction: ${motionPrompt}`;
+  }
+
+  return `Create a short photorealistic live-action video from this starting frame. Preserve realistic human features, natural skin texture, believable movement, cinematic lighting, and a real-camera look. Avoid animation, cartoon, illustration, stylized CGI, or rubbery motion. Scene action: ${motionPrompt}`;
+}
+
 /**
  * Submit an LTX-Video image-to-video draft job.
  *
- * LTX is the fast draft stage — 480p, low inference steps, generates in 3–8s.
+ * LTX is the fast draft stage. For sketch inputs we bias toward speed and
+ * composition readability so users can approve or reject the idea quickly.
  *
- * @param imageUrl - fal CDN URL of the photorealistic start frame (from Flux)
+ * @param imageUrl - fal CDN URL of the uploaded sketch or prepared frame
  * @param motionPrompt - scene description / motion prompt
+ * @param mode - whether the input is a rough sketch or a prepared frame
  * @returns The request_id for this job
  */
 export async function submitLtxJob(
   imageUrl: string,
-  motionPrompt: string
+  motionPrompt: string,
+  mode: LtxDraftMode = "frame"
 ): Promise<string> {
   const { request_id } = await fal.queue.submit(LTX_MODEL_ID, {
     input: {
       image_url: imageUrl,
-      prompt: motionPrompt,
-      negative_prompt: "worst quality, inconsistent motion, blurry, jittery, distorted",
-      num_frames: 97,           // ~3 seconds at ~30fps
-      num_inference_steps: 30,  // speed/quality sweet spot for drafts
-      guidance_scale: 3.0,
-      resolution: "480p",       // draft quality — prioritize speed
+      prompt: buildDraftPrompt(motionPrompt, mode),
+      negative_prompt: "worst quality, animation, cartoon, anime, illustration, stylized, distorted face, deformed hands, rubbery motion, blurry, jittery",
+      num_frames: mode === "sketch" ? 65 : 49,
+      num_inference_steps: mode === "sketch" ? 20 : 20,
+      guidance_scale: mode === "sketch" ? 2.5 : 3.0,
+      resolution: "480p",
     } as LtxInput,
   });
 
@@ -68,7 +81,8 @@ export async function submitLtxJob(
 /**
  * Poll until the LTX job completes and return the video URL.
  *
- * Polls every 5 seconds for up to 6 minutes. LTX typically finishes in 5–30s.
+ * Polls every 2 seconds for up to 4 minutes. LTX is the fast path, so shorter
+ * polling keeps the UI responsive once the job finishes.
  */
 export async function waitForLtxCompletion(requestId: string): Promise<string> {
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {

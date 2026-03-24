@@ -15,23 +15,14 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-type SceneStatus =
-  | "PENDING"
-  | "UPLOADING"
-  | "PREVIEWING"
-  | "PREVIEW_READY"
-  | "PREVIEW_FAILED"
-  | "UPRENDERING"
-  | "GENERATING_VIDEO"
-  | "COMPLETE"
-  | "FAILED";
+import type { SceneStatus } from "@/lib/studio/status";
 
 type StepState = "pending" | "active" | "complete" | "failed" | "skipped";
 
 interface JobStatusBoardProps {
   status: SceneStatus;
   hasDialogue?: boolean;
+  previewFrameReady?: boolean;
   stage?: "draft" | "final" | "idle"; // Phase 4
   className?: string;
 }
@@ -150,6 +141,7 @@ function StepRow({
 export function JobStatusBoard({
   status,
   hasDialogue = false,
+  previewFrameReady = false,
   stage = "idle",
   className,
 }: JobStatusBoardProps) {
@@ -159,12 +151,13 @@ export function JobStatusBoard({
   const draftSteps = useMemo(() => {
     if (!isDraft) return null;
     const uploading: StepState = "complete"; // uploading always done by draft stage
-    const uprendering: StepState =
-      status === "PREVIEWING" ? "active"
-      : status === "PREVIEW_READY" || status === "PREVIEW_FAILED" ? "complete"
+    const previewFrame: StepState =
+      status === "PREVIEWING" && !previewFrameReady ? "active"
+      : previewFrameReady || status === "PREVIEW_READY" ? "complete"
+      : status === "PREVIEW_FAILED" ? "failed"
       : "pending";
     const generating: StepState =
-      status === "PREVIEWING" ? "active"
+      status === "PREVIEWING" && previewFrameReady ? "active"
       : status === "PREVIEW_READY" ? "complete"
       : status === "PREVIEW_FAILED" ? "failed"
       : "pending";
@@ -172,8 +165,8 @@ export function JobStatusBoard({
       status === "PREVIEW_READY" ? "complete"
       : status === "PREVIEW_FAILED" ? "failed"
       : "pending";
-    return { uploading, uprendering, generating, ready };
-  }, [status, isDraft]);
+    return { uploading, previewFrame, generating, ready };
+  }, [status, isDraft, previewFrameReady]);
 
   const finalSteps = useMemo(() => {
     if (!isFinal) return null;
@@ -195,13 +188,13 @@ export function JobStatusBoard({
               Draft Stage
             </h3>
             <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
-              LTX ~5s
+              Photoreal draft ~30-40s
             </span>
           </div>
           <div className="space-y-0">
             <StepRow icon={<Upload className="h-4 w-4" />} label="Uploading assets" state={draftSteps.uploading} />
-            <StepRow icon={<Sparkles className="h-4 w-4" />} label="Uprendering sketch" state={draftSteps.uprendering} />
-            <StepRow icon={<Film className="h-4 w-4" />} label="Generating draft" state={draftSteps.generating} />
+            <StepRow icon={<Sparkles className="h-4 w-4" />} label="Building preview frame" state={draftSteps.previewFrame} />
+            <StepRow icon={<Film className="h-4 w-4" />} label="Animating preview" state={draftSteps.generating} />
             <StepRow icon={<PartyPopper className="h-4 w-4" />} label="Preview ready" state={draftSteps.ready} showConnector={false} />
           </div>
         </>
