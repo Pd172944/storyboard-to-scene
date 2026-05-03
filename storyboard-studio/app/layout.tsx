@@ -17,7 +17,7 @@ const display = Cormorant_Garamond({
 });
 
 export const metadata: Metadata = {
-  title: "Storyboard Studio — Cinematic AI Previsualization",
+  title: "Framesmith — Cinematic AI Previsualization",
   description:
     "Drop a photo, pick a shot, get a cinematic scene in seconds. Character-consistent sequences with voice.",
 };
