@@ -4,6 +4,12 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
   },
+  env: {
+    // Expose GPU/inference mode to the client for UI badges.
+    // Set these in .env.local — they are read at build time.
+    NEXT_PUBLIC_ENABLE_GPU: process.env.ENABLE_GPU ?? "false",
+    NEXT_PUBLIC_INFERENCE_MODE: process.env.INFERENCE_MODE ?? "fal",
+  },
   images: {
     remotePatterns: [
       {
@@ -27,16 +33,6 @@ const nextConfig: NextConfig = {
         hostname: "fal-cdn.batuhan-941.workers.dev",
       },
     ],
-  },
-  webpack: (config, { isServer }) => {
-    if (isServer) {
-      config.resolve = config.resolve ?? {};
-      config.resolve.alias = {
-        ...config.resolve.alias,
-        canvas: false,
-      };
-    }
-    return config;
   },
 };
 

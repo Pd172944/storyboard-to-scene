@@ -61,7 +61,6 @@ export function VoiceSampleUpload({
           voiceSampleUrl: url,
         });
 
-        // Voice ID will be created on next scene submission
         setVoiceStatus("PENDING");
       } catch (error) {
         console.error("Failed to upload voice sample:", error);
@@ -116,28 +115,28 @@ export function VoiceSampleUpload({
         return null;
       case "PENDING":
         return (
-          <span className="flex items-center gap-1.5 text-xs text-amber-400">
+          <span className="flex items-center gap-1.5 text-xs text-amber-600">
             <AlertTriangle className="h-3 w-3" />
             Voice saved — ID will be created on first scene
           </span>
         );
       case "CREATING":
         return (
-          <span className="flex items-center gap-1.5 text-xs text-indigo-400">
+          <span className="flex items-center gap-1.5 text-xs text-[var(--accent)]">
             <Loader2 className="h-3 w-3 animate-spin" />
             Creating voice ID...
           </span>
         );
       case "READY":
         return (
-          <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+          <span className="flex items-center gap-1.5 text-xs text-emerald-600">
             <CheckCircle2 className="h-3 w-3" />
             Voice ready
           </span>
         );
       case "FAILED":
         return (
-          <span className="flex items-center gap-1.5 text-xs text-red-400">
+          <span className="flex items-center gap-1.5 text-xs text-red-600">
             <AlertTriangle className="h-3 w-3" />
             Failed to create voice — scenes will generate without voice
           </span>
@@ -147,7 +146,7 @@ export function VoiceSampleUpload({
 
   return (
     <div className={cn("space-y-2", className)}>
-      <Label>Character Voice (optional)</Label>
+      <Label className="text-[var(--text-secondary)]">Character Voice (optional)</Label>
 
       <input
         ref={inputRef}
@@ -159,12 +158,11 @@ export function VoiceSampleUpload({
       />
 
       {sampleUrl ? (
-        /* Uploaded state — show filename, audio preview, and remove button */
-        <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 space-y-2">
+        <div className="rounded-lg border border-[var(--line-strong)] bg-white p-3 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              <Mic className="h-4 w-4 flex-shrink-0 text-indigo-400" />
-              <span className="text-xs text-gray-300 truncate">
+              <Mic className="h-4 w-4 flex-shrink-0 text-[var(--accent)]" />
+              <span className="text-xs text-[var(--text-secondary)] truncate">
                 {fileName ?? "Voice sample"}
               </span>
             </div>
@@ -173,22 +171,20 @@ export function VoiceSampleUpload({
               size="sm"
               onClick={handleRemove}
               disabled={uploading}
-              className="h-6 w-6 flex-shrink-0 p-0 text-gray-500 hover:text-red-400"
+              className="h-6 w-6 flex-shrink-0 p-0 text-[var(--text-muted)] hover:text-red-500"
             >
               <X className="h-3.5 w-3.5" />
             </Button>
           </div>
-          {/* Audio playback preview */}
           <audio
             src={sampleUrl}
             controls
             className="w-full h-8"
-            style={{ colorScheme: "dark" }}
+            style={{ colorScheme: "light" }}
           />
-          {/* Re-upload option */}
           {showReplaceWarning ? (
             <div className="space-y-1.5">
-              <p className="text-[11px] text-amber-400">
+              <p className="text-[11px] text-amber-600">
                 Uploading a new sample will replace the existing voice and invalidate the Voice ID.
               </p>
               <div className="flex gap-2">
@@ -203,7 +199,7 @@ export function VoiceSampleUpload({
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-6 text-xs text-gray-400"
+                  className="h-6 text-xs text-[var(--text-muted)]"
                   onClick={() => setShowReplaceWarning(false)}
                 >
                   Cancel
@@ -213,7 +209,7 @@ export function VoiceSampleUpload({
           ) : (
             <button
               onClick={handleUploadClick}
-              className="text-[11px] text-gray-500 hover:text-gray-300 transition-colors"
+              className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
               disabled={uploading}
             >
               Replace sample
@@ -221,26 +217,25 @@ export function VoiceSampleUpload({
           )}
         </div>
       ) : (
-        /* Empty state — drop zone */
         <div
           onClick={handleUploadClick}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           className={cn(
             "flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed py-5 cursor-pointer transition-colors",
-            "border-gray-700 bg-gray-800/50 hover:border-gray-600 hover:bg-gray-800",
+            "border-[var(--line-strong)] bg-white hover:border-[var(--accent)]/40 hover:bg-[var(--accent-light)]",
             uploading && "pointer-events-none opacity-50"
           )}
         >
           {uploading ? (
-            <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+            <Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]" />
           ) : (
             <>
-              <Mic className="h-5 w-5 text-gray-500" />
-              <p className="text-xs text-gray-500 text-center px-4">
+              <Mic className="h-5 w-5 text-[var(--text-muted)]" />
+              <p className="text-xs text-[var(--text-muted)] text-center px-4">
                 Upload a 5-second voice sample for voice cloning
               </p>
-              <p className="text-[10px] text-gray-600">WAV · MP3 · M4A</p>
+              <p className="text-[10px] text-[var(--text-muted)]">WAV · MP3 · M4A</p>
             </>
           )}
         </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useCallback, useEffect } from "react";
-import { Upload, X, ImageIcon, CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
+import { Upload, X, CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -31,7 +31,6 @@ export function CharacterRefUpload({
   const [uploading, setUploading] = useState(false);
   const [reelStatus, setReelStatus] = useState<CharacterReelStatus>(initialReelStatus);
 
-  // Sync initial values when they change (compare by value to avoid infinite loops)
   const initialRefUrlsKey = JSON.stringify(initialRefUrls);
   useEffect(() => {
     setImageUrls(JSON.parse(initialRefUrlsKey) as string[]);
@@ -43,7 +42,6 @@ export function CharacterRefUpload({
 
   const setCharacterRefsMutation = trpc.project.setCharacterRefs.useMutation();
 
-  // Poll reel status while generating
   const reelStatusQuery = trpc.project.getCharacterReelStatus.useQuery(
     { projectId },
     {
@@ -58,7 +56,6 @@ export function CharacterRefUpload({
     }
   );
 
-  // Update local state when poll returns
   useEffect(() => {
     if (reelStatusQuery.data) {
       setReelStatus(reelStatusQuery.data.status);
@@ -76,9 +73,6 @@ export function CharacterRefUpload({
         const newUrls = [...imageUrls, url];
         setImageUrls(newUrls);
 
-        // Auto-save character refs via tRPC
-        // setCharacterRefs immediately marks status COMPLETE in the DB
-        // (we use Kling O3 Pro elements directly — no async reel generation needed)
         await setCharacterRefsMutation.mutateAsync({
           projectId,
           referenceImageUrls: newUrls,
@@ -99,7 +93,6 @@ export function CharacterRefUpload({
       setImageUrls(newUrls);
 
       if (newUrls.length === 0) {
-        // No refs left — reset status
         setReelStatus("NONE");
       }
 
@@ -111,14 +104,10 @@ export function CharacterRefUpload({
           });
           setReelStatus("COMPLETE");
         } else {
-          // Clear refs in DB — update directly since setCharacterRefs requires >= 1
-          // When all images are removed, just invalidate
           await setCharacterRefsMutation.mutateAsync({
             projectId,
-            referenceImageUrls: newUrls.length > 0 ? newUrls : [],
-          }).catch(() => {
-            // If validation fails (0 images), that's fine — user cleared all refs
-          });
+            referenceImageUrls: [],
+          }).catch(() => {});
         }
       } catch (error) {
         console.error("Failed to update character refs:", error);
@@ -155,28 +144,28 @@ export function CharacterRefUpload({
         return null;
       case "PENDING":
         return (
-          <span className="flex items-center gap-1.5 text-xs text-amber-400">
+          <span className="flex items-center gap-1.5 text-xs text-amber-600">
             <AlertTriangle className="h-3 w-3" />
-            Character saved — reel will generate on next scene
+            Character saved — will apply on next scene
           </span>
         );
       case "GENERATING":
         return (
-          <span className="flex items-center gap-1.5 text-xs text-indigo-400">
+          <span className="flex items-center gap-1.5 text-xs text-[var(--accent)]">
             <Loader2 className="h-3 w-3 animate-spin" />
             Generating identity reel...
           </span>
         );
       case "COMPLETE":
         return (
-          <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+          <span className="flex items-center gap-1.5 text-xs text-emerald-600">
             <CheckCircle2 className="h-3 w-3" />
-            Character refs ready — identity will be locked in video
+            Character refs ready — identity locked in video
           </span>
         );
       case "FAILED":
         return (
-          <span className="flex items-center gap-1.5 text-xs text-red-400">
+          <span className="flex items-center gap-1.5 text-xs text-red-600">
             <AlertTriangle className="h-3 w-3" />
             Reel failed — scenes will generate without consistency lock
           </span>
@@ -186,7 +175,7 @@ export function CharacterRefUpload({
 
   return (
     <div className={cn("space-y-2", className)}>
-      <Label>Character Reference Images (up to {MAX_IMAGES})</Label>
+      <Label className="text-[var(--text-secondary)]">Character References (up to {MAX_IMAGES})</Label>
 
       <input
         ref={inputRef}
@@ -197,13 +186,11 @@ export function CharacterRefUpload({
         disabled={disabled || uploading}
       />
 
-      {/* Horizontal row of thumbnail slots */}
       <div className="flex gap-3">
-        {/* Existing images */}
         {imageUrls.map((url, index) => (
           <div
             key={url}
-            className="relative h-24 w-24 flex-shrink-0 overflow-hidden rounded-lg border border-gray-700 bg-gray-800"
+            className="relative h-24 w-24 flex-shrink-0 overflow-hidden rounded-lg border border-[var(--line-strong)] bg-[var(--bg)]"
           >
             <img
               src={url}
@@ -222,7 +209,6 @@ export function CharacterRefUpload({
           </div>
         ))}
 
-        {/* Add slot — show if under MAX_IMAGES */}
         {imageUrls.length < MAX_IMAGES && (
           <div
             onClick={() => !uploading && inputRef.current?.click()}
@@ -230,23 +216,22 @@ export function CharacterRefUpload({
             onDragOver={handleDragOver}
             className={cn(
               "flex h-24 w-24 flex-shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed transition-colors",
-              "border-gray-700 bg-gray-800/50 hover:border-gray-600 hover:bg-gray-800",
+              "border-[var(--line-strong)] bg-white hover:border-[var(--accent)]/40 hover:bg-[var(--accent-light)]",
               (disabled || uploading) && "pointer-events-none opacity-50"
             )}
           >
             {uploading ? (
-              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              <Loader2 className="h-5 w-5 animate-spin text-[var(--accent)]" />
             ) : (
               <>
-                <Upload className="h-4 w-4 text-gray-400" />
-                <span className="text-[10px] text-gray-500">Add</span>
+                <Upload className="h-4 w-4 text-[var(--text-muted)]" />
+                <span className="text-[10px] text-[var(--text-muted)]">Add</span>
               </>
             )}
           </div>
         )}
       </div>
 
-      {/* Status indicator */}
       {statusIndicator()}
     </div>
   );

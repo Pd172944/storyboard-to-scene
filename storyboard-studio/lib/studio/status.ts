@@ -37,5 +37,5 @@ export function getSceneStage(status?: SceneStatus): SceneStage {
 }
 
 export function canRenderFinal(status?: SceneStatus): boolean {
-  return status === "PREVIEW_READY" || status === "PREVIEW_FAILED";
+  return status === "PREVIEW_READY";
 }

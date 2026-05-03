@@ -1,8 +1,11 @@
 import { fal } from "@/lib/fal/client";
-import { createKlingVoice, KLING_MODEL_ID, submitKlingJob, waitForKlingCompletion } from "@/lib/fal/kling";
+import { buildFalWebhookUrl } from "@/lib/fal/webhooks";
+import { createKlingVoice } from "@/lib/fal/kling";
 import { generatePreviewFrame, upsampleSketch } from "@/lib/fal/flux";
 import { submitLtxJob, waitForLtxCompletion } from "@/lib/fal/ltx";
+import { submitSeedanceJob, waitForSeedanceCompletion, SEEDANCE_MODEL_ID } from "@/lib/fal/seedance";
 import { synthesizeDialogue } from "@/lib/fal/chatterbox";
+import { localGenerateFrame, localGenerateVideo } from "@/lib/media/local";
 import {
   runpodCancelFinalVideo,
   runpodCreateVoice,
@@ -24,7 +27,9 @@ import type {
 } from "@/lib/media/types";
 
 function getMediaBackend(): MediaBackend {
-  return process.env.MEDIA_BACKEND === "runpod" ? "runpod" : "fal";
+  if (process.env.INFERENCE_MODE === "local") return "local";
+  if (process.env.MEDIA_BACKEND === "runpod") return "runpod";
+  return "fal";
 }
 
 const falProvider: MediaProvider = {
@@ -36,7 +41,12 @@ const falProvider: MediaProvider = {
     return upsampleSketch(input.sketchUrl, input.motionPrompt, input.characterRefUrl);
   },
   async submitDraftVideo(input: DraftVideoInput): Promise<VideoJobHandle> {
-    const requestId = await submitLtxJob(input.imageUrl, input.motionPrompt, "frame");
+    const requestId = await submitLtxJob(
+      input.imageUrl,
+      input.motionPrompt,
+      "frame",
+      input.webhookUrl ?? buildFalWebhookUrl("/api/webhooks/ltx")
+    );
     return { provider: "fal", requestId };
   },
   waitForDraftVideo(job: VideoJobHandle) {
@@ -46,25 +56,24 @@ const falProvider: MediaProvider = {
     return waitForLtxCompletion(job.requestId);
   },
   async submitFinalVideo(input: FinalVideoInput): Promise<VideoJobHandle> {
-    const requestId = await submitKlingJob(
+    // Seedance v1 Pro — 1080p, 16:9, open fal.ai API (no special tier required).
+    // Character identity is anchored by the Flux Kontext start frame.
+    const requestId = await submitSeedanceJob(
       input.imageUrl,
       input.motionPrompt,
-      input.characterRefUrls,
-      input.voiceId
     );
-
-    return { provider: "fal", requestId };
+    return { provider: "fal", requestId, model: "seedance" };
   },
   waitForFinalVideo(job: VideoJobHandle) {
     if (!job.requestId) {
       throw new Error("FAL final video job missing requestId");
     }
-    return waitForKlingCompletion(job.requestId);
+    return waitForSeedanceCompletion(job.requestId);
   },
   synthesizeDialogue,
   createVoice: createKlingVoice,
   async cancelFinalVideo(requestId: string) {
-    await fal.queue.cancel(KLING_MODEL_ID, { requestId });
+    await fal.queue.cancel(SEEDANCE_MODEL_ID, { requestId });
   },
 };
 
@@ -97,7 +106,48 @@ const runpodProvider: MediaProvider = {
   cancelFinalVideo: runpodCancelFinalVideo,
 };
 
+/**
+ * Local inference provider — routes frame/video generation to the Python sidecar.
+ * Final video (Kling) still uses fal.ai since Kling is proprietary.
+ */
+const localProvider: MediaProvider = {
+  backend: "local",
+  async generatePreviewFrame(input: PreviewFrameInput): Promise<string> {
+    return localGenerateFrame(input.characterRefUrl ?? input.sketchUrl, input.motionPrompt);
+  },
+  async generateFinalFrame(input: FinalFrameInput): Promise<string> {
+    return localGenerateFrame(input.characterRefUrl ?? input.sketchUrl, input.motionPrompt);
+  },
+  async submitDraftVideo(input: DraftVideoInput): Promise<VideoJobHandle> {
+    const videoUrl = await localGenerateVideo(input.imageUrl, input.motionPrompt);
+    return { provider: "local", videoUrl };
+  },
+  async waitForDraftVideo(job: VideoJobHandle): Promise<string> {
+    if (!job.videoUrl) throw new Error("Local draft video missing videoUrl");
+    return job.videoUrl;
+  },
+  async submitFinalVideo(input: FinalVideoInput): Promise<VideoJobHandle> {
+    const requestId = await submitSeedanceJob(input.imageUrl, input.motionPrompt);
+    return { provider: "fal", requestId, model: "seedance" };
+  },
+  waitForFinalVideo(job: VideoJobHandle): Promise<string> {
+    if (!job.requestId) throw new Error("Final video job missing requestId");
+    return waitForSeedanceCompletion(job.requestId);
+  },
+  synthesizeDialogue,
+  createVoice: createKlingVoice,
+  async cancelFinalVideo(requestId: string) {
+    await fal.queue.cancel(SEEDANCE_MODEL_ID, { requestId });
+  },
+};
+
 export function getMediaProvider(): MediaProvider {
-  return getMediaBackend() === "runpod" ? runpodProvider : falProvider;
+  const backend = getMediaBackend();
+  if (backend === "local") return localProvider;
+  if (backend === "runpod") return runpodProvider;
+  return falProvider;
 }
 
+export function isGpuEnabled(): boolean {
+  return process.env.ENABLE_GPU === "true" || process.env.ENABLE_GPU === "1";
+}

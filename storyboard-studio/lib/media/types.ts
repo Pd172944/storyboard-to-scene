@@ -1,9 +1,11 @@
-export type MediaBackend = "fal" | "runpod";
+export type MediaBackend = "fal" | "runpod" | "local";
 
 export interface VideoJobHandle {
   provider: MediaBackend;
   requestId?: string;
   videoUrl?: string;
+  // Which video model produced this job — used to route polling vs webhook paths
+  model?: "kling" | "ltx" | "seedance";
 }
 
 export interface PreviewFrameInput {
@@ -17,6 +19,7 @@ export interface FinalFrameInput extends PreviewFrameInput {}
 export interface DraftVideoInput {
   imageUrl: string;
   motionPrompt: string;
+  webhookUrl?: string;
 }
 
 export interface FinalVideoInput {
@@ -24,6 +27,7 @@ export interface FinalVideoInput {
   motionPrompt: string;
   characterRefUrls?: string[];
   voiceId?: string;
+  webhookUrl?: string;
 }
 
 export interface MediaProvider {
