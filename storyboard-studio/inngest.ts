@@ -1,8 +1,8 @@
 import { generateScene } from "@/lib/inngest/generate-scene";
 import { generatePreview } from "@/lib/inngest/generate-preview";
+import { speculativeGenerate } from "@/lib/inngest/speculative-generate";
 
-// Export all Inngest functions for registration with the serve handler
-export const functions = [generateScene, generatePreview];
+export const functions = [generateScene, generatePreview, speculativeGenerate];
 
 // Re-export the client for convenience
 export { inngest } from "@/lib/inngest/client";

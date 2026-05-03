@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft, Film, Loader2, Trash2, ChevronDown, ChevronUp,
-  Share2, Check, Cpu, Zap, Plus,
+  Share2, Check, Cpu, Zap, Plus, Play, SkipForward,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import type { inferRouterOutputs } from "@trpc/server";
@@ -23,22 +23,118 @@ import {
   canRenderFinal, getSceneStage,
   type CharacterReelStatus, type SceneStatus, type VoiceStatus,
 } from "@/lib/studio/status";
+import { buildScenePrompt } from "@/lib/scene/prompt";
+import { ScriptImportPanel } from "@/components/script/ScriptImportPanel";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type ProjectScene = RouterOutputs["project"]["getProject"]["scenes"][number];
 
-function buildScenePrompt(
-  location: string,
-  weather: string,
-  action: string,
-  additional: string
-): string {
-  const parts: string[] = [];
-  const context = [location.trim(), weather.trim()].filter(Boolean).join(", ");
-  if (context) parts.push(context + ".");
-  if (action.trim()) parts.push(action.trim());
-  if (additional.trim()) parts.push(additional.trim());
-  return parts.join(" ").trim();
+// ---------------------------------------------------------------------------
+// Rough Cut Player — plays all complete scenes in sequence, zero API cost.
+// Shows up as soon as 2+ scenes have a video ready.
+// ---------------------------------------------------------------------------
+function RoughCutPlayer({ scenes }: { scenes: { id: string; status: SceneStatus; videoUrl: string | null; uprenderUrl: string | null; title: string }[] }) {
+  const readyScenes = scenes
+    .filter((s) => s.status === "COMPLETE" && s.videoUrl)
+    .sort((a, b) => scenes.indexOf(a) - scenes.indexOf(b));
+
+  const [open, setOpen] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (open) setCurrentIndex(0);
+  }, [open]);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.load();
+      videoRef.current.play().catch(() => {});
+    }
+  }, [currentIndex, open]);
+
+  if (readyScenes.length < 2) return null;
+
+  const current = readyScenes[currentIndex];
+
+  return (
+    <>
+      <div className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">Rough Cut</p>
+            <p className="mt-0.5 text-sm font-medium text-[var(--text-primary)]">
+              {readyScenes.length} scene{readyScenes.length !== 1 ? "s" : ""} ready
+            </p>
+          </div>
+          <button
+            onClick={() => setOpen(true)}
+            className="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-[var(--accent-deep)] active:scale-[0.98]"
+          >
+            <Play className="h-3.5 w-3.5" />
+            Watch
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4">
+          <div className="w-full max-w-3xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-white/50 uppercase tracking-widest">Rough Cut</p>
+                <p className="text-sm font-semibold text-white mt-0.5">
+                  Scene {currentIndex + 1} / {readyScenes.length} — {current.title}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentIndex((i) => Math.min(i + 1, readyScenes.length - 1))}
+                  disabled={currentIndex >= readyScenes.length - 1}
+                  className="rounded-lg border border-white/20 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/40 hover:text-white disabled:opacity-30"
+                >
+                  <SkipForward className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => setOpen(false)}
+                  className="rounded-lg border border-white/20 px-3 py-1.5 text-xs text-white/70 transition hover:border-white/40 hover:text-white"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl bg-black shadow-2xl">
+              <video
+                ref={videoRef}
+                key={current.id}
+                src={current.videoUrl!}
+                poster={current.uprenderUrl ?? undefined}
+                autoPlay
+                playsInline
+                className="w-full"
+                onEnded={() => {
+                  if (currentIndex < readyScenes.length - 1) {
+                    setCurrentIndex((i) => i + 1);
+                  }
+                }}
+              />
+            </div>
+
+            <div className="flex gap-1.5">
+              {readyScenes.map((s, i) => (
+                <button
+                  key={s.id}
+                  onClick={() => setCurrentIndex(i)}
+                  className={`h-1.5 flex-1 rounded-full transition ${i === currentIndex ? "bg-white" : "bg-white/25 hover:bg-white/40"}`}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 export default function StudioPage() {
@@ -62,6 +158,7 @@ export default function StudioPage() {
   const [additional, setAdditional] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [inputMode, setInputMode] = useState<"manual" | "script">("manual");
 
   const gpuEnabled = process.env.NEXT_PUBLIC_ENABLE_GPU === "true";
   const seedConsumed = useRef(false);
@@ -233,115 +330,145 @@ export default function StudioPage() {
         {/* ---- LEFT: Input panel ---- */}
         <div className="flex w-[380px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-[var(--line)] bg-white p-5">
 
-          {/* Image */}
-          <section>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-              Source Image
-            </p>
-            <DropZone
-              onImageReady={handleImageReady}
-              currentImage={imagePreview}
-              uploading={isUploadingImage}
-              compact
-            />
-          </section>
-
-          {/* Scene Details — structured input */}
-          <section className="space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
-              Scene Details
-            </p>
-
-            <div className="space-y-1.5">
-              <p className="text-[11px] font-medium text-[var(--text-secondary)]">Location</p>
-              <Input
-                placeholder="Rain-soaked Tokyo alley, neon-lit"
-                value={location}
-                onChange={(e) => setLocation(e.target.value)}
-                disabled={isSubmitting}
-                className="rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus-visible:ring-[var(--accent)]/40"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <p className="text-[11px] font-medium text-[var(--text-secondary)]">Weather / Lighting</p>
-              <Input
-                placeholder="Overcast, soft diffused daylight"
-                value={weather}
-                onChange={(e) => setWeather(e.target.value)}
-                disabled={isSubmitting}
-                className="rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus-visible:ring-[var(--accent)]/40"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <p className="text-[11px] font-medium text-[var(--text-secondary)]">Action <span className="text-[var(--text-muted)] font-normal">— required</span></p>
-              <Textarea
-                placeholder="A woman steps into frame, pauses under flickering neon, then slowly turns toward camera"
-                value={action}
-                onChange={(e) => setAction(e.target.value)}
-                disabled={isSubmitting}
-                rows={3}
-                className="resize-none rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]/50 focus:ring-0"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <p className="text-[11px] font-medium text-[var(--text-secondary)]">Additional <span className="text-[var(--text-muted)] font-normal">— optional</span></p>
-              <Textarea
-                placeholder="Camera language, specific lighting cues, mood, pacing, shot framing, or anything else that completes the scene…"
-                value={additional}
-                onChange={(e) => setAdditional(e.target.value)}
-                disabled={isSubmitting}
-                rows={4}
-                className="resize-none rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]/50 focus:ring-0"
-              />
-            </div>
-          </section>
-
-          {/* Primary CTA */}
-          <button
-            onClick={handleGenerate}
-            disabled={!canGenerate}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] py-3 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40 hover:bg-[var(--accent-deep)] active:scale-[0.98]"
-          >
-            {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" />Generating…</> : <><Plus className="h-4 w-4" />Generate Preview</>}
-          </button>
-
-          {/* Render final */}
-          {canRenderFinalAction && (
+          {/* Mode toggle */}
+          <div className="flex rounded-xl border border-[var(--line)] bg-[var(--bg)] p-1">
             <button
-              onClick={handleApproveForRender}
-              disabled={isApproving}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent-light)] py-3 text-sm font-semibold text-[var(--accent)] transition disabled:opacity-50 hover:bg-[var(--accent)]/15 active:scale-[0.98]"
+              onClick={() => setInputMode("manual")}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-semibold transition ${inputMode === "manual" ? "bg-white shadow-sm text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}
             >
-              {isApproving ? <><Loader2 className="h-4 w-4 animate-spin" />Starting render…</> : <><Zap className="h-4 w-4" />Render Final Video</>}
+              Manual
             </button>
-          )}
-
-          {/* Advanced accordion */}
-          <div className="rounded-xl border border-[var(--line)] bg-[var(--bg)]">
             <button
-              type="button"
-              onClick={() => setShowAdvanced(v => !v)}
-              className="flex w-full items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]"
+              onClick={() => setInputMode("script")}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-semibold transition ${inputMode === "script" ? "bg-white shadow-sm text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}
             >
-              <span>Character &amp; Voice</span>
-              {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              Script Import
             </button>
-            {showAdvanced && (
-              <div className="border-t border-[var(--line)] px-4 pb-4 pt-3 space-y-4">
-                <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">Character Reference</p>
-                  <CharacterRefUpload projectId={projectId} initialRefUrls={characterRefUrls} initialReelStatus={characterReelStatus} />
-                </div>
-                <div className="border-t border-[var(--line)] pt-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">Voice Sample</p>
-                  <VoiceSampleUpload projectId={projectId} initialVoiceSampleUrl={voiceSampleUrl} initialVoiceStatus={voiceStatus} />
-                </div>
-              </div>
-            )}
           </div>
+
+          {inputMode === "script" ? (
+            <ScriptImportPanel
+              projectId={projectId}
+              seedImageUrl={imageUrl}
+              onScenesCreated={(sceneIds) => {
+                setInputMode("manual");
+                if (sceneIds.length > 0) setActiveSceneId(sceneIds[0]);
+                projectQuery.refetch();
+              }}
+            />
+          ) : (
+            <>
+              {/* Image */}
+              <section>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+                  Source Image
+                </p>
+                <DropZone
+                  onImageReady={handleImageReady}
+                  currentImage={imagePreview}
+                  uploading={isUploadingImage}
+                  compact
+                />
+              </section>
+
+              {/* Scene Details — structured input */}
+              <section className="space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+                  Scene Details
+                </p>
+
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-medium text-[var(--text-secondary)]">Location</p>
+                  <Input
+                    placeholder="Rain-soaked Tokyo alley, neon-lit"
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                    disabled={isSubmitting}
+                    className="rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus-visible:ring-[var(--accent)]/40"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-medium text-[var(--text-secondary)]">Weather / Lighting</p>
+                  <Input
+                    placeholder="Overcast, soft diffused daylight"
+                    value={weather}
+                    onChange={(e) => setWeather(e.target.value)}
+                    disabled={isSubmitting}
+                    className="rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus-visible:ring-[var(--accent)]/40"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-medium text-[var(--text-secondary)]">Action <span className="text-[var(--text-muted)] font-normal">— required</span></p>
+                  <Textarea
+                    placeholder="A woman steps into frame, pauses under flickering neon, then slowly turns toward camera"
+                    value={action}
+                    onChange={(e) => setAction(e.target.value)}
+                    disabled={isSubmitting}
+                    rows={3}
+                    className="resize-none rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]/50 focus:ring-0"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-medium text-[var(--text-secondary)]">Additional <span className="text-[var(--text-muted)] font-normal">— optional</span></p>
+                  <Textarea
+                    placeholder="Camera language, specific lighting cues, mood, pacing, shot framing, or anything else that completes the scene…"
+                    value={additional}
+                    onChange={(e) => setAdditional(e.target.value)}
+                    disabled={isSubmitting}
+                    rows={4}
+                    className="resize-none rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]/50 focus:ring-0"
+                  />
+                </div>
+              </section>
+
+              {/* Primary CTA */}
+              <button
+                onClick={handleGenerate}
+                disabled={!canGenerate}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] py-3 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40 hover:bg-[var(--accent-deep)] active:scale-[0.98]"
+              >
+                {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" />Generating…</> : <><Plus className="h-4 w-4" />Generate Preview</>}
+              </button>
+
+              {/* Render final */}
+              {canRenderFinalAction && (
+                <button
+                  onClick={handleApproveForRender}
+                  disabled={isApproving}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent-light)] py-3 text-sm font-semibold text-[var(--accent)] transition disabled:opacity-50 hover:bg-[var(--accent)]/15 active:scale-[0.98]"
+                >
+                  {isApproving ? <><Loader2 className="h-4 w-4 animate-spin" />Starting render…</> : <><Zap className="h-4 w-4" />Render Final Video</>}
+                </button>
+              )}
+
+              {/* Advanced accordion */}
+              <div className="rounded-xl border border-[var(--line)] bg-[var(--bg)]">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced(v => !v)}
+                  className="flex w-full items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]"
+                >
+                  <span>Character &amp; Voice</span>
+                  {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+                {showAdvanced && (
+                  <div className="border-t border-[var(--line)] px-4 pb-4 pt-3 space-y-4">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">Character Reference</p>
+                      <CharacterRefUpload projectId={projectId} initialRefUrls={characterRefUrls} initialReelStatus={characterReelStatus} />
+                    </div>
+                    <div className="border-t border-[var(--line)] pt-3">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">Voice Sample</p>
+                      <VoiceSampleUpload projectId={projectId} initialVoiceSampleUrl={voiceSampleUrl} initialVoiceStatus={voiceStatus} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {/* ---- RIGHT: Preview + Timeline ---- */}
@@ -390,6 +517,9 @@ export default function StudioPage() {
               </div>
             </div>
           )}
+
+          {/* Rough Cut — appears when 2+ scenes have video */}
+          <RoughCutPlayer scenes={timelineScenes} />
 
           {/* Timeline */}
           {timelineScenes.length > 0 && (

@@ -52,7 +52,8 @@ PRESERVE EXACTLY — do not alter any of the following:
 • Ethnicity and skin tone: match the reference exactly — do not westernize, lighten, or darken
 • Hair: same color, texture, length, and style
 • Body proportions and build
-• Any clothing or accessories visible in the reference that the scene does not explicitly replace`;
+• Clothing: reproduce every garment from the reference identically — same shirt, jacket, trousers, shoes, colors, patterns, fit. Do NOT substitute "contextually appropriate" clothing. If the reference shows a red hoodie, the output must show that exact red hoodie regardless of the scene setting. Only change clothing if the scene description explicitly names a specific different garment.
+• Accessories: glasses, jewelry, bags, hats — preserve all unless the scene explicitly removes them`;
 
 // What Flux should actively transform
 const TRANSFORM_PREAMBLE = `\

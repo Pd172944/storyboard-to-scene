@@ -1,4 +1,5 @@
 import { Redis } from "@upstash/redis";
+import crypto from "crypto";
 
 const globalForRedis = globalThis as unknown as {
   redis: Redis | undefined;
@@ -81,4 +82,34 @@ export async function invalidateCharacterReelCache(
   projectId: string
 ): Promise<void> {
   await redis.del(`${CHARACTER_REEL_PREFIX}${projectId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Speculative pre-generation cache
+// Keyed by a hash of (motionPrompt + characterRefUrl) so it's content-addressable.
+// Written by speculative-generate Inngest function; consumed by generate-scene.
+// TTL: 15 minutes — enough time for a user to finish uploading character images.
+// ---------------------------------------------------------------------------
+
+const SPECULATIVE_PREFIX = "speculative:";
+const SPECULATIVE_TTL = 900; // 15 minutes
+
+export function computeSpeculativeKey(motionPrompt: string, characterRefUrl: string): string {
+  const hash = crypto
+    .createHash("sha256")
+    .update(`${motionPrompt}:${characterRefUrl}`)
+    .digest("hex")
+    .slice(0, 20);
+  return `${SPECULATIVE_PREFIX}${hash}`;
+}
+
+export async function setSpeculativeCache(key: string, uprenderUrl: string): Promise<void> {
+  await redis.set(key, uprenderUrl, { ex: SPECULATIVE_TTL });
+}
+
+// Atomically get and delete — prevents two concurrent generate-scene runs from
+// both consuming the same speculative result (one would fall through to Flux).
+export async function getAndDeleteSpeculativeCache(key: string): Promise<string | null> {
+  const val = await redis.getdel(key);
+  return (val as string | null) ?? null;
 }

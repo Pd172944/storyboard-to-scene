@@ -4,6 +4,8 @@ import { canUseFalWebhooks } from "@/lib/fal/webhooks";
 import {
   setJobState,
   deleteJobState,
+  computeSpeculativeKey,
+  getAndDeleteSpeculativeCache,
 } from "@/lib/redis";
 import { getMediaProvider } from "@/lib/media/provider";
 
@@ -12,8 +14,10 @@ interface GenerateSceneEventData {
   sketchDataUrl: string; // fal storage URL (uploaded client-side)
   motionPrompt: string;
   projectId: string;
-  dialogue?: string;       // Phase 3: character dialogue for voice synthesis
-  voiceSampleUrl?: string; // Phase 3: project-level voice cloning sample
+  dialogue?: string;          // Phase 3: character dialogue for voice synthesis
+  voiceSampleUrl?: string;    // Phase 3: project-level voice cloning sample
+  chainContinuity?: boolean;  // Script import: fire next scene after uprender
+  prevUprenderUrl?: string;   // Script import: previous scene's output → use as Flux input for outfit continuity
 }
 
 export const generateScene = inngest.createFunction(
@@ -40,6 +44,8 @@ export const generateScene = inngest.createFunction(
       projectId,
       dialogue,
       voiceSampleUrl,
+      chainContinuity,
+      prevUprenderUrl,
     } = event.data as GenerateSceneEventData;
     const media = getMediaProvider();
     const useFalWebhooks = media.backend === "fal" && canUseFalWebhooks();
@@ -94,8 +100,30 @@ export const generateScene = inngest.createFunction(
           return existing.uprenderUrl;
         }
 
-        // Use first character ref as identity anchor; fall back to sketch if none
-        const primaryRef = characterRefUrls.length > 0 ? characterRefUrls[0] : undefined;
+        // Continuity chain: when previous scene's output frame is provided,
+        // use it as Flux's identity anchor instead of the original character ref.
+        // This preserves outfit, lighting, and pose between scenes.
+        // Otherwise fall back to the project's character ref photo.
+        const primaryRef = prevUprenderUrl
+          ?? (characterRefUrls.length > 0 ? characterRefUrls[0] : undefined);
+
+        // Check speculative pre-generation cache — only when NOT chaining.
+        // Chaining requires Flux to run on prevUprenderUrl (different input than
+        // what was speculatively generated with the original character ref photo).
+        if (!prevUprenderUrl) {
+          try {
+            const specKey = computeSpeculativeKey(motionPrompt, primaryRef ?? sketchUrl);
+            const specUrl = await getAndDeleteSpeculativeCache(specKey);
+            if (specUrl) {
+              await prisma.scene.update({
+                where: { id: sceneId },
+                data: { uprenderUrl: specUrl },
+              });
+              return specUrl;
+            }
+          } catch { /* Redis unavailable — fall through to Flux */ }
+        }
+
         const url = await media.generateFinalFrame({
           sketchUrl,
           motionPrompt,
@@ -124,6 +152,50 @@ export const generateScene = inngest.createFunction(
           })
         : Promise.resolve(null),
     ]);
+
+    // -------------------------------------------------------------------------
+    // Step 2c: Fire the next scene in the continuity chain immediately after
+    // this scene's uprender completes — before Seedance starts.
+    // This gives scene N+1's Flux a head-start while scene N's Seedance runs,
+    // and ensures scene N+1 uses scene N's output frame for outfit continuity.
+    // Only active in script import mode (chainContinuity: true).
+    // -------------------------------------------------------------------------
+    if (chainContinuity) {
+      await step.run("fire-next-in-chain", async () => {
+        const currentScene = await prisma.scene.findUnique({
+          where: { id: sceneId },
+          select: { sortOrder: true },
+        });
+        if (currentScene == null) return null;
+
+        const nextScene = await prisma.scene.findFirst({
+          where: {
+            projectId,
+            sortOrder: { gt: currentScene.sortOrder },
+            status: "PENDING",
+          },
+          orderBy: { sortOrder: "asc" },
+          select: { id: true, motionPrompt: true, dialogue: true },
+        });
+        if (!nextScene) return null;
+
+        await inngest.send({
+          name: "studio/scene.generate",
+          data: {
+            sceneId: nextScene.id,
+            sketchDataUrl: sketchUrl,
+            motionPrompt: nextScene.motionPrompt,
+            projectId,
+            dialogue: nextScene.dialogue ?? undefined,
+            voiceSampleUrl,
+            chainContinuity: true,
+            prevUprenderUrl: uprenderUrl,
+          },
+        });
+
+        return nextScene.id;
+      });
+    }
 
     // -------------------------------------------------------------------------
     // Step 3: Create Kling Voice ID from the synthesized WAV.
