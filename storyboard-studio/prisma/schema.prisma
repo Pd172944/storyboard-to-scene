@@ -52,6 +52,13 @@ model Scene {
   ltxRequestId      String?     // in-flight LTX job request_id
   renderApprovedAt  DateTime?   // when user clicked "Render Final"
   inngestRunId      String?
+
+  // Phase 5: sharing
+  shareToken        String?     @unique  // public share token (cuid)
+
+  // Ordering for timeline
+  sortOrder         Int         @default(0)
+
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 

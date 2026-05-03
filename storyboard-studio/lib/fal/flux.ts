@@ -4,6 +4,10 @@ export interface FluxKontextInput {
   image_url: string;
   prompt: string;
   loras: never[];
+  num_inference_steps?: number;
+  guidance_scale?: number;
+  output_format?: "jpeg" | "png";
+  safety_tolerance?: "1" | "2" | "3" | "4" | "5" | "6";
 }
 
 export interface FluxKontextOutput {
@@ -15,67 +19,130 @@ export interface FluxKontextOutput {
   }>;
 }
 
-const FLUX_MODEL_ID = "fal-ai/flux-pro/kontext";
-const MAX_POLL_ATTEMPTS = 60; // Increased to 3 minutes to avoid timeout
-const POLL_INTERVAL_MS = 3000;
+// Flux Pro Kontext Max — higher per-token inference budget vs standard Kontext.
+// Produces sharper facial detail, better scene transformation, and stronger
+// identity preservation at the same API surface.
+const FLUX_MODEL_ID = "fal-ai/flux-pro/kontext/max";
 
-function getFirstImageUrl(data: unknown): string {
-  const resultImageUrl = (data as FluxKontextOutput | undefined)?.images?.[0]?.url;
-  if (!resultImageUrl) {
-    throw new Error("Flux completed but no image URL was returned");
+const MAX_POLL_ATTEMPTS = 160; // ~4 min at 1.5s
+const POLL_INTERVAL_MS = 1500;
+
+// ---------------------------------------------------------------------------
+// Hidden system prompt engineering.
+//
+// Flux Kontext is an IMAGE EDITING model, not a text-to-image model.
+// It responds to edit instructions: explicit KEEP vs CHANGE structure
+// consistently outperforms descriptive generation prompts.
+//
+// Key failure modes we guard against:
+//   - Identity drift: Kontext can substitute a "more average" face if the
+//     identity lock language is too weak
+//   - Motion confusion: shot presets contain camera movement language
+//     ("slow push-in", "tracking shot") that has no meaning for a still frame —
+//     Kontext tries to interpret it and warps the image instead
+//   - Stylization: without explicit cinema-realism anchors the model drifts
+//     toward HDR, AI-art, or painterly aesthetics
+// ---------------------------------------------------------------------------
+
+// What Flux must never touch regardless of the scene prompt
+const PRESERVE_BLOCK = `\
+PRESERVE EXACTLY — do not alter any of the following:
+• The person's face: geometry, bone structure, eye shape, nose, mouth, jawline
+• Age: do not make younger or older
+• Ethnicity and skin tone: match the reference exactly — do not westernize, lighten, or darken
+• Hair: same color, texture, length, and style
+• Body proportions and build
+• Any clothing or accessories visible in the reference that the scene does not explicitly replace`;
+
+// What Flux should actively transform
+const TRANSFORM_PREAMBLE = `\
+TRANSFORM — change only the following to match the scene description:
+• Background, environment, and setting
+• Ambient and directional lighting (color, angle, intensity)
+• Atmospheric effects (fog, rain, dust, lens flare, bokeh depth)
+• Camera framing and focal length implied by the shot type
+• Color grade and mood consistent with the described setting`;
+
+// Technical cinema quality bar
+const QUALITY_BLOCK = `\
+TECHNICAL QUALITY REQUIREMENTS:
+• Photorealistic — looks like a frame captured on an ARRI Alexa or RED Monstro cinema camera
+• Natural skin texture with subsurface scattering and pore detail — no plastic, no AI-smoothing
+• Correct shadow falloff and light wrap on skin
+• Professional depth of field: sharp subject, environment appropriate bokeh
+• Cinematic color grade: accurate white balance, no HDR oversaturation
+• Absolutely avoid: illustration, animation, cartoon, CGI look, painterly texture, stylized rendering, overexposed highlights`;
+
+// Shot presets include motion language ("slow push-in", "tracking", "crane up")
+// that is meaningless for a still image and actively degrades Kontext output.
+// This function rewrites motion language into equivalent compositional intent.
+const MOTION_TO_COMPOSITION: [RegExp, string][] = [
+  [/slow (?:push|dolly)[- ]in/gi,        "tight framing with compressed depth"],
+  [/slow (?:pull|dolly)[- ]back/gi,      "wide framing with environmental depth"],
+  [/tracking shot/gi,                    "side-on framing at shoulder height"],
+  [/handheld/gi,                         "intimate, slightly asymmetric framing"],
+  [/crane (?:up|shot)/gi,               "elevated wide-angle framing, downward angle"],
+  [/overhead (?:shot|angle)?/gi,         "top-down overhead framing"],
+  [/(?:pov|first[- ]person)/gi,         "first-person eye-level framing"],
+  [/dolly zoom/gi,                       "telephoto compression with wide-angle distortion"],
+  [/(?:slow |subtle )?push[- ]in/gi,    "slight telephoto compression, close framing"],
+  [/(?:slow |subtle )?pull[- ]back/gi,  "wide establishing framing"],
+  [/camera (?:follows|tracks|moves|drifts|rises|descends)/gi, "cinematic framing"],
+  [/(?:slow|subtle|gentle) /gi,         ""],
+];
+
+function resolveSceneAsStill(motionPrompt: string): string {
+  let s = motionPrompt;
+  for (const [pattern, replacement] of MOTION_TO_COMPOSITION) {
+    s = s.replace(pattern, replacement);
   }
-  return resultImageUrl;
+  // Collapse doubled spaces from removals
+  return s.replace(/\s{2,}/g, " ").trim();
 }
 
-/**
- * Uprender a rough sketch into a photorealistic frame using Flux Kontext.
- *
- * When a character reference image is provided, Flux uses it as the base input
- * so the generated frame has the correct character identity. Flux edits the
- * reference photo into the desired scene while preserving the character's face,
- * skin tone, hair, and clothing — giving Kling a correct start frame to animate.
- *
- * Without a reference, falls back to sketch-based uprendering.
- *
- * @param sketchUrl - fal CDN URL of the uploaded sketch (used as fallback)
- * @param scenePrompt - text prompt describing the scene and motion
- * @param characterRefUrl - optional URL of the primary character reference image
- * @returns URL of the generated photorealistic image
- */
+function buildCinematicFramePrompt(scenePrompt: string): string {
+  const stillScene = resolveSceneAsStill(scenePrompt);
+
+  return `Edit this reference photo into a cinema-quality still frame.
+
+${PRESERVE_BLOCK}
+
+${TRANSFORM_PREAMBLE}
+Scene to create: ${stillScene}
+
+This is a STILL PHOTOGRAPH — a single frozen moment, not a video frame. Render only what the camera sees at the decisive moment of the shot. There is no motion; express any implied movement through composition, blur, and lighting only.
+
+${QUALITY_BLOCK}
+
+Output: one subject unless the scene explicitly calls for additional people.`;
+}
+
+function getFirstImageUrl(data: unknown): string {
+  const url = (data as FluxKontextOutput | undefined)?.images?.[0]?.url;
+  if (!url) throw new Error("Flux completed but no image URL was returned");
+  return url;
+}
+
 export async function upsampleSketch(
   sketchUrl: string,
   scenePrompt: string,
   characterRefUrl?: string
 ): Promise<string> {
-  let imageUrl: string;
-  let prompt: string;
-
-  if (characterRefUrl) {
-    // Use the reference photo as Flux's input image.
-    // Flux Kontext will edit it — preserving the character's appearance —
-    // while transforming the scene to match the prompt.
-    imageUrl = characterRefUrl;
-    prompt = `You are given a reference photo of a character. Preserve this character's exact appearance: their face, skin tone, hair color, hair style, and clothing must remain IDENTICAL to the reference. Do not alter the character's identity in any way.
-
-Transform the scene and setting around them to match this description: ${scenePrompt}
-
-Requirements:
-- Character appearance: EXACTLY as shown in the reference photo (do not change face, ethnicity, hair, or clothing)
-- Scene/setting: as described above
-- Style: photorealistic, live-action cinema frame, real human skin texture, realistic facial structure, professional photography, cinematic quality, natural lighting
-- Absolutely avoid: animation, cartoon, anime, illustration, painterly, stylized CGI
-- Only one person (the character from the reference) unless the scene description explicitly requires others`;
-  } else {
-    // No character ref — use sketch as the base for composition guidance
-    imageUrl = sketchUrl;
-    prompt = `Transform this rough sketch into a high quality, photorealistic live-action scene. Scene description: ${scenePrompt}. Maintain the exact composition, poses, and layout from the sketch. Make it look like a frame from a real film shot with a camera. The people must look like real human beings with natural skin texture, realistic facial features, and believable clothing. No animation, cartoon, anime, illustration, painterly, or stylized CGI look.`;
-  }
+  // The input is always a subject/character photo — never a storyboard document.
+  // If the user uploaded a dedicated character ref, prefer it (sharper identity anchor).
+  // Otherwise the seed photo they dropped on the homepage serves as the reference.
+  const imageUrl = characterRefUrl ?? sketchUrl;
+  const prompt = buildCinematicFramePrompt(scenePrompt);
 
   const { request_id } = await fal.queue.submit(FLUX_MODEL_ID, {
     input: {
       image_url: imageUrl,
       prompt,
       loras: [],
+      num_inference_steps: 28,
+      guidance_scale: 4.5,
+      output_format: "jpeg",
+      safety_tolerance: "5",
     } as FluxKontextInput,
   });
 
@@ -95,7 +162,6 @@ Requirements:
       const result = await fal.queue.result(FLUX_MODEL_ID, {
         requestId: request_id,
       });
-
       return getFirstImageUrl(result.data);
     }
   }

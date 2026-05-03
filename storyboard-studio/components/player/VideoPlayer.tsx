@@ -54,7 +54,7 @@ function VideoCore({
   }, []);
 
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-gray-700 bg-black">
+    <div className="group relative overflow-hidden rounded-xl border border-[var(--line-strong)] bg-[var(--bg)]">
       <video
         ref={videoRef}
         src={src}
@@ -70,28 +70,28 @@ function VideoCore({
         preload="metadata"
       />
 
-      {/* Controls — hidden when dimmed (final rendering overlay takes over) */}
+      {/* Controls — hidden when dimmed */}
       {!dimmed && (
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100">
           <div
-            className="mb-2 h-1 cursor-pointer rounded-full bg-gray-700"
+            className="mb-2 h-1 cursor-pointer rounded-full bg-white/30"
             onClick={handleProgressClick}
           >
             <div
-              className="h-full rounded-full bg-indigo-500 transition-all"
+              className="h-full rounded-full bg-[var(--accent)] transition-all"
               style={{ width: `${progress}%` }}
             />
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={togglePlay}>
+            <Button variant="ghost" size="sm" onClick={togglePlay} className="text-white hover:text-white hover:bg-white/20">
               {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
             </Button>
             <div className="flex-1" />
-            <Button variant="ghost" size="sm" onClick={handleFullscreen}>
+            <Button variant="ghost" size="sm" onClick={handleFullscreen} className="text-white hover:text-white hover:bg-white/20">
               <Maximize2 className="h-4 w-4" />
             </Button>
             <a href={src} download target="_blank" rel="noopener noreferrer">
-              <Button variant="ghost" size="sm">
+              <Button variant="ghost" size="sm" className="text-white hover:text-white hover:bg-white/20">
                 <Download className="h-4 w-4" />
               </Button>
             </a>
@@ -114,11 +114,11 @@ export function VideoPlayer({
 }: VideoPlayerProps) {
   return (
     <div className={cn("space-y-3", className)}>
-      {title && <h3 className="text-sm font-semibold text-gray-300">{title}</h3>}
+      {title && <h3 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h3>}
 
-      {/* ── PREVIEWING — skeleton shimmer ─────────────────────────────────── */}
+      {/* ── PREVIEWING — keyframe generation ─────────────────────────────── */}
       {sceneStatus === "PREVIEWING" && (
-        <div className="relative overflow-hidden rounded-xl border border-gray-700 bg-gray-900 aspect-video">
+        <div className="relative overflow-hidden rounded-xl border border-[var(--line-strong)] bg-[var(--line)] aspect-video">
           {previewFrameUrl ? (
             <img
               src={previewFrameUrl}
@@ -126,63 +126,36 @@ export function VideoPlayer({
               className="h-full w-full object-cover"
             />
           ) : (
-            <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/5 to-transparent" />
+            <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/40 to-transparent" />
           )}
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/45">
-            <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
-            <p className="text-sm font-medium text-gray-200">
-              {previewFrameUrl ? "Animating preview…" : "Building preview frame…"}
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/30">
+            <Loader2 className="h-8 w-8 animate-spin text-white" />
+            <p className="text-sm font-medium text-white drop-shadow">
+              {previewFrameUrl ? "Refining keyframe…" : "Generating keyframe…"}
             </p>
-            <span className="rounded-full bg-indigo-500/20 px-2.5 py-0.5 text-xs text-indigo-200 font-medium">
-              {previewFrameUrl ? "Another ~10-15 seconds" : "~30-40 seconds total"}
+            <span className="rounded-full bg-white/20 px-2.5 py-0.5 text-xs text-white font-medium backdrop-blur-sm">
+              {previewFrameUrl ? "Almost there" : "~10–20 seconds total"}
             </span>
           </div>
         </div>
       )}
 
-      {/* ── PREVIEW_READY — draft with render button ───────────────────────── */}
-      {sceneStatus === "PREVIEW_READY" && previewVideoUrl && (
-        <div className="relative rounded-xl ring-2 ring-amber-400/40 ring-offset-1 ring-offset-gray-950">
-          <VideoCore src={previewVideoUrl} loop />
-          {/* Draft badge */}
-          <span className="absolute left-2 top-2 rounded-md bg-amber-400/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-900">
-            Draft
-          </span>
-          {/* Render Final button */}
-          <div className="absolute bottom-3 right-3">
-            <Button
-              size="sm"
-              onClick={onRenderFinal}
-              disabled={isApproving}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg"
-            >
-              {isApproving ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Zap className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              Render Final
-            </Button>
-          </div>
-        </div>
-      )}
-
       {sceneStatus === "PREVIEW_READY" && !previewVideoUrl && previewFrameUrl && (
-        <div className="relative rounded-xl ring-2 ring-amber-400/40 ring-offset-1 ring-offset-gray-950 overflow-hidden border border-gray-700 bg-black">
+        <div className="relative rounded-xl ring-2 ring-amber-400/50 overflow-hidden border border-[var(--line-strong)] bg-[var(--bg)]">
           <img
             src={previewFrameUrl}
             alt="Preview frame"
             className="h-auto w-full"
           />
-          <span className="absolute left-2 top-2 rounded-md bg-amber-400/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-900">
-            Preview Frame
+          <span className="absolute left-2 top-2 rounded-md bg-amber-400 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-sm">
+            Keyframe
           </span>
           <div className="absolute bottom-3 right-3">
             <Button
               size="sm"
               onClick={onRenderFinal}
               disabled={isApproving}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg"
+              className="btn-accent shadow-lg"
             >
               {isApproving ? (
                 <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -195,11 +168,11 @@ export function VideoPlayer({
         </div>
       )}
 
-      {/* ── PREVIEW_FAILED — error with bypass option ──────────────────────── */}
+      {/* ── PREVIEW_FAILED ───────────────────────────────────────────────── */}
       {sceneStatus === "PREVIEW_FAILED" && (
         <div className="space-y-3">
           {previewFrameUrl && (
-            <div className="overflow-hidden rounded-xl border border-gray-700 bg-black">
+            <div className="overflow-hidden rounded-xl border border-[var(--line-strong)] bg-[var(--bg)]">
               <img
                 src={previewFrameUrl}
                 alt="Preview frame"
@@ -207,60 +180,46 @@ export function VideoPlayer({
               />
             </div>
           )}
-          <div className="overflow-hidden rounded-xl border border-red-500/30 bg-red-500/10 p-6 flex flex-col items-center gap-4">
-            <p className="text-sm text-red-300 text-center">
-              Draft video generation failed. The preview frame is still usable, and you can send the scene through the full render path.
+          <div className="overflow-hidden rounded-xl border border-red-200 bg-red-50 p-6 flex flex-col items-center gap-4">
+            <p className="text-sm text-red-600 text-center">
+              Keyframe generation failed. Adjust the prompt and try again.
             </p>
-            <Button
-              size="sm"
-              onClick={onRenderFinal}
-              disabled={isApproving}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white"
-            >
-              {isApproving ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Zap className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              Render Final anyway
-            </Button>
           </div>
         </div>
       )}
 
-      {/* ── UPRENDERING / GENERATING_VIDEO — draft dimmed + overlay ──────────── */}
+      {/* ── UPRENDERING / GENERATING_VIDEO ───────────────────────────────── */}
       {(sceneStatus === "UPRENDERING" || sceneStatus === "GENERATING_VIDEO") && (
         <div className="relative">
           {previewVideoUrl ? (
             <VideoCore src={previewVideoUrl} loop dimmed />
           ) : (
-            <div className="rounded-xl border border-gray-700 bg-gray-900 aspect-video" />
+            <div className="rounded-xl border border-[var(--line-strong)] bg-[var(--line)] aspect-video" />
           )}
-          {/* Rendering overlay */}
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-xl">
-            <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
-            <p className="text-sm font-medium text-gray-200">Rendering final version…</p>
-            <span className="rounded-full bg-gray-800 px-2.5 py-0.5 text-xs text-gray-400">
+            <Loader2 className="h-8 w-8 animate-spin text-white drop-shadow" />
+            <p className="text-sm font-medium text-white drop-shadow">Rendering final version…</p>
+            <span className="rounded-full bg-white/80 px-2.5 py-0.5 text-xs text-[var(--text-secondary)] shadow-sm">
               ~60–90 seconds
             </span>
           </div>
         </div>
       )}
 
-      {/* ── COMPLETE — final video full quality ───────────────────────────── */}
+      {/* ── COMPLETE ─────────────────────────────────────────────────────── */}
       {sceneStatus === "COMPLETE" && videoUrl && (
         <div className="relative">
           <VideoCore src={videoUrl} />
-          <span className="absolute left-2 top-2 rounded-md bg-emerald-500/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-900">
+          <span className="absolute left-2 top-2 rounded-md bg-emerald-500 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-sm">
             Final
           </span>
         </div>
       )}
 
-      {/* ── FAILED — final render failed ──────────────────────────────────── */}
+      {/* ── FAILED ───────────────────────────────────────────────────────── */}
       {sceneStatus === "FAILED" && (
-        <div className="overflow-hidden rounded-xl border border-red-500/30 bg-red-500/10 p-4">
-          <p className="text-sm text-red-300">Final render failed. Please try again.</p>
+        <div className="overflow-hidden rounded-xl border border-red-200 bg-red-50 p-4">
+          <p className="text-sm text-red-600">Final render failed. Please try again.</p>
         </div>
       )}
     </div>

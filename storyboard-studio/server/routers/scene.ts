@@ -17,7 +17,7 @@ export const sceneRouter = router({
         projectId: z.string().cuid(),
         title: z.string().min(1, "Scene title is required").max(200),
         motionPrompt: z.string().min(1, "Motion prompt is required").max(2000),
-        sketchDataUrl: z.string().min(1, "Sketch is required"),
+        sketchDataUrl: z.string().min(1, "Storyboard reference is required"),
         dialogue: z.string().max(500).optional(), // Phase 3: character dialogue
       })
     )
@@ -55,6 +55,50 @@ export const sceneRouter = router({
     }),
 
   /**
+   * Simplified single-image submission — the primary fast path.
+   * One image + one prompt → frame in ~15s (Flux) → approve for Kling final.
+   * No storyboard sheet assembly required.
+   */
+  submitFromSingleImage: publicProcedure
+    .input(
+      z.object({
+        projectId: z.string().cuid(),
+        imageUrl: z.string().url("Must be a valid image URL"),
+        motionPrompt: z.string().min(1).max(2000),
+        title: z.string().max(200).optional(),
+        dialogue: z.string().max(500).optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const autoTitle =
+        input.title?.trim() ||
+        input.motionPrompt.trim().split(/\s+/).slice(0, 6).join(" ");
+
+      const scene = await prisma.scene.create({
+        data: {
+          projectId: input.projectId,
+          title: autoTitle,
+          motionPrompt: input.motionPrompt,
+          sketchDataUrl: input.imageUrl,
+          dialogue: input.dialogue ?? null,
+          status: "PENDING",
+        },
+      });
+
+      await inngest.send({
+        name: "studio/preview.generate",
+        data: {
+          sceneId: scene.id,
+          sketchDataUrl: input.imageUrl,
+          motionPrompt: input.motionPrompt,
+          projectId: input.projectId,
+        },
+      });
+
+      return { sceneId: scene.id };
+    }),
+
+  /**
    * Submit a scene for draft preview generation via LTX-Video.
    * Fast path — fires the preview workflow, not the Kling workflow.
    * The preview first creates a fast photoreal frame, then animates that
@@ -66,7 +110,7 @@ export const sceneRouter = router({
         projectId: z.string().cuid(),
         title: z.string().min(1, "Scene title is required").max(200),
         motionPrompt: z.string().min(1, "Motion prompt is required").max(2000),
-        sketchDataUrl: z.string().min(1, "Sketch is required"),
+        sketchDataUrl: z.string().min(1, "Storyboard reference is required"),
         dialogue: z.string().max(500).optional(),
       })
     )

@@ -68,6 +68,8 @@ interface SceneCardProps {
   canRenderFinal?: boolean;
   isSubmitting: boolean;
   isApproving?: boolean;
+  storyboardFrameCount?: number;
+  storyboardReady?: boolean;
   className?: string;
 }
 
@@ -77,6 +79,8 @@ export function SceneCard({
   canRenderFinal = false,
   isSubmitting,
   isApproving = false,
+  storyboardFrameCount = 0,
+  storyboardReady = false,
   className,
 }: SceneCardProps) {
   const [title, setTitle] = useState("");
@@ -149,8 +153,8 @@ export function SceneCard({
             {errors.motionPrompt && (
               <p className="text-xs text-red-400">{errors.motionPrompt}</p>
             )}
-            <p className="text-[11px] text-gray-500">
-              Strong prompts describe framing, physical action, and lighting. Keep it cinematic and concrete.
+            <p className="text-[11px] text-[var(--text-muted)]">
+              Strong prompts describe framing, physical action, and lighting. The hero frame anchors identity, while the storyboard strip anchors sequence and motion.
             </p>
           </div>
 
@@ -158,13 +162,13 @@ export function SceneCard({
             {PROMPT_BOARDS.map((board) => (
               <div
                 key={board.label}
-                className="rounded-2xl border border-white/10 bg-black/20 p-3"
+                className="rounded-2xl border border-[var(--line-strong)] bg-[var(--bg)] p-3"
               >
                 <div className="mb-2">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-200/75">
+                  <p className="eyebrow">
                     {board.label}
                   </p>
-                  <p className="mt-1 text-[11px] leading-5 text-gray-500">
+                  <p className="mt-1 text-[11px] leading-5 text-[var(--text-muted)]">
                     {board.helper}
                   </p>
                 </div>
@@ -174,7 +178,7 @@ export function SceneCard({
                       key={option}
                       type="button"
                       onClick={() => handlePromptChip(option)}
-                      className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-gray-300 transition hover:border-amber-300/40 hover:bg-amber-300/10 hover:text-amber-50"
+                      className="rounded-full border border-[var(--line-strong)] bg-white px-2.5 py-1 text-[11px] text-[var(--text-secondary)] transition hover:border-[var(--accent)]/30 hover:bg-[var(--accent-light)] hover:text-[var(--accent)]"
                     >
                       {option}
                     </button>
@@ -194,20 +198,20 @@ export function SceneCard({
             <Button
               type="submit"
               size="lg"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !storyboardReady}
               className="flex-1"
               variant="outline"
             >
               {isSubmitting ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Previewing…
+                  Generating…
                 </>
               ) : (
                 <>
                   <Eye className="mr-2 h-4 w-4" />
-                  Preview
-                  <span className="ml-1.5 text-[10px] opacity-60">~35s</span>
+                  Generate Keyframe
+                  <span className="ml-1.5 text-[10px] opacity-60">~10-20s</span>
                 </>
               )}
             </Button>
@@ -233,6 +237,12 @@ export function SceneCard({
               )}
             </Button>
           </div>
+
+          {!storyboardReady && (
+            <p className="text-[11px] text-amber-400">
+              Upload 3 to 5 storyboard frames first. Current count: {storyboardFrameCount}.
+            </p>
+          )}
         </form>
       </CardContent>
     </Card>

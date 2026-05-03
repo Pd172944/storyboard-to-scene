@@ -1,186 +1,172 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Film, Loader2, Trash2, User } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import {
+  ArrowLeft, Film, Loader2, Trash2, ChevronDown, ChevronUp,
+  Share2, Check, Cpu, Zap, Plus,
+} from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@/server/routers/_app";
-import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
-import type { StoryboardCanvasHandle } from "@/components/canvas/StoryboardCanvas";
-import { SceneCard, type SceneFormData } from "@/components/scene/SceneCard";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { CharacterRefUpload } from "@/components/scene/CharacterRefUpload";
 import { VoiceSampleUpload } from "@/components/scene/VoiceSampleUpload";
-import { dataUrlToPngFile, uploadFileToFalStorage } from "@/lib/fal/storage";
-import {
-  canRenderFinal,
-  getSceneStage,
-  type CharacterReelStatus,
-  type SceneStatus,
-  type VoiceStatus,
-} from "@/lib/studio/status";
-
-const StoryboardCanvas = dynamic(
-  () => import("@/components/canvas/StoryboardCanvas").then((mod) => mod.StoryboardCanvas),
-  {
-    ssr: false,
-    loading: () => (
-      <div
-        className="flex items-center justify-center w-full bg-gray-900 rounded-xl border border-gray-700"
-        style={{ height: 450, width: 800 }}
-      >
-        <p className="text-gray-500 text-sm">Loading canvas…</p>
-      </div>
-    ),
-  }
-);
+import { DropZone } from "@/components/drop-zone/DropZone";
+import { SceneTimeline } from "@/components/timeline/SceneTimeline";
 import { JobStatusBoard } from "@/components/status/JobStatusBoard";
 import { VideoPlayer } from "@/components/player/VideoPlayer";
+import { uploadFileToFalStorage } from "@/lib/fal/storage";
+import {
+  canRenderFinal, getSceneStage,
+  type CharacterReelStatus, type SceneStatus, type VoiceStatus,
+} from "@/lib/studio/status";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type ProjectScene = RouterOutputs["project"]["getProject"]["scenes"][number];
 
+function buildScenePrompt(
+  location: string,
+  weather: string,
+  action: string,
+  additional: string
+): string {
+  const parts: string[] = [];
+  const context = [location.trim(), weather.trim()].filter(Boolean).join(", ");
+  if (context) parts.push(context + ".");
+  if (action.trim()) parts.push(action.trim());
+  if (additional.trim()) parts.push(additional.trim());
+  return parts.join(" ").trim();
+}
+
 export default function StudioPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const projectId = params.projectId as string;
+  const seedImageUrl = searchParams.get("seed");
 
-  const canvasRef = useRef<StoryboardCanvasHandle>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
-  const [activeDialogue, setActiveDialogue] = useState<string>("");
 
-  // Fetch project data
-  const projectQuery = trpc.project.getProject.useQuery(
-    { projectId },
-    { enabled: !!projectId }
-  );
+  const [imagePreview, setImagePreview] = useState<string | null>(seedImageUrl ?? null);
+  const [imageUrl, setImageUrl] = useState<string | null>(seedImageUrl ?? null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
 
-  // Poll scene status aggressively during the draft path so the preview shows
-  // up as soon as the fast LTX job completes.
+  const [location, setLocation] = useState("");
+  const [weather, setWeather] = useState("");
+  const [action, setAction] = useState("");
+  const [additional, setAdditional] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+
+  const gpuEnabled = process.env.NEXT_PUBLIC_ENABLE_GPU === "true";
+  const seedConsumed = useRef(false);
+
+  // ---- Queries ----
+  const projectQuery = trpc.project.getProject.useQuery({ projectId }, { enabled: !!projectId });
+
   const sceneStatusQuery = trpc.scene.getSceneStatus.useQuery(
     { sceneId: activeSceneId! },
     {
       enabled: !!activeSceneId,
-      refetchInterval: (query) => {
-        const status = query.state.data?.status;
-        if (status === "COMPLETE" || status === "FAILED") return false;
-        if (status === "PREVIEW_READY" || status === "PREVIEW_FAILED") return false;
-        if (status === "PREVIEWING") return 2000;
-        return 3000;
+      refetchInterval: (q) => {
+        const s = q.state.data?.status;
+        if (!s || s === "COMPLETE" || s === "FAILED" || s === "PREVIEW_READY" || s === "PREVIEW_FAILED") return false;
+        return s === "PREVIEWING" ? 1000 : 3000;
       },
     }
   );
 
-  const submitPreviewMutation = trpc.scene.submitPreview.useMutation();
-  const approveForRenderMutation = trpc.scene.approveForRender.useMutation();
-  const deleteSceneMutation = trpc.scene.deleteScene.useMutation({
-    onSuccess: (_data, variables) => {
-      if (activeSceneId === variables.sceneId) {
-        setActiveSceneId(null);
-      }
-      projectQuery.refetch();
-    },
-  });
-
-  // Poll character reel status every 4 seconds while generating
   const reelStatusQuery = trpc.project.getCharacterReelStatus.useQuery(
     { projectId },
-    {
-      enabled: !!projectId,
-      refetchInterval: (query) => {
-        const status = query.state.data?.status;
-        if (status === "GENERATING") return 4000;
-        return false;
-      },
-    }
+    { enabled: !!projectId, refetchInterval: (q) => q.state.data?.status === "GENERATING" ? 4000 : false }
   );
+
+  const voiceStatusQuery = trpc.project.getVoiceStatus.useQuery(
+    { projectId },
+    { enabled: !!projectId, refetchInterval: (q) => q.state.data?.voiceStatus === "CREATING" ? 4000 : false }
+  );
+
+  // ---- Mutations ----
+  const submitFromImageMutation = trpc.scene.submitFromSingleImage.useMutation();
+  const approveForRenderMutation = trpc.scene.approveForRender.useMutation();
+  const createShareLinkMutation = trpc.share.createShareLink.useMutation();
+  const deleteSceneMutation = trpc.scene.deleteScene.useMutation({
+    onSuccess: (_d, v) => { if (activeSceneId === v.sceneId) setActiveSceneId(null); projectQuery.refetch(); },
+  });
 
   const characterReelStatus = (reelStatusQuery.data?.status ?? "NONE") as CharacterReelStatus;
   const characterRefUrls = reelStatusQuery.data?.refImageUrls ?? [];
-
-  // Poll voice status
-  const voiceStatusQuery = trpc.project.getVoiceStatus.useQuery(
-    { projectId },
-    {
-      enabled: !!projectId,
-      refetchInterval: (query) => {
-        const s = query.state.data?.voiceStatus;
-        if (s === "CREATING") return 4000;
-        return false;
-      },
-    }
-  );
-
   const voiceSampleUrl = voiceStatusQuery.data?.voiceSampleUrl ?? null;
   const voiceStatus = (voiceStatusQuery.data?.voiceStatus ?? "NONE") as VoiceStatus;
 
-  // Upload a data URL (canvas export) to fal storage via presigned URL
-  const uploadSketch = useCallback(
-    async (dataUrl: string): Promise<string> => {
-      const file = await dataUrlToPngFile(dataUrl, `sketch-${Date.now()}.png`);
-      return uploadFileToFalStorage(file);
-    },
-    []
-  );
+  useEffect(() => {
+    if (seedImageUrl && !seedConsumed.current) {
+      seedConsumed.current = true;
+      setImageUrl(seedImageUrl);
+      setImagePreview(seedImageUrl);
+    }
+  }, [seedImageUrl]);
 
-  // Phase 4: Submit draft preview via LTX
-  const handlePreview = useCallback(
-    async (data: SceneFormData) => {
-      if (!canvasRef.current) return;
+  const handleImageReady = useCallback(async (file: File, localPreview: string) => {
+    setImagePreview(localPreview);
+    setImageUrl(null);
+    setIsUploadingImage(true);
+    try {
+      const url = await uploadFileToFalStorage(file);
+      setImageUrl(url);
+    } finally {
+      setIsUploadingImage(false);
+    }
+  }, []);
 
-      setIsSubmitting(true);
-      try {
-        const sketchDataUrl = canvasRef.current.getSketchDataUrl();
-        const sketchUrl = await uploadSketch(sketchDataUrl);
+  const handleGenerate = useCallback(async () => {
+    if (!imageUrl || !action.trim()) return;
+    setIsSubmitting(true);
+    try {
+      const motionPrompt = buildScenePrompt(location, weather, action, additional);
+      const titleHint = location.trim() || action.trim().split(/\s+/).slice(0, 6).join(" ");
+      const result = await submitFromImageMutation.mutateAsync({
+        projectId, imageUrl, motionPrompt, title: titleHint || undefined,
+      });
+      setActiveSceneId(result.sceneId);
+      projectQuery.refetch();
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [imageUrl, location, weather, action, additional, projectId, submitFromImageMutation, projectQuery]);
 
-        const result = await submitPreviewMutation.mutateAsync({
-          projectId,
-          title: data.title,
-          motionPrompt: data.motionPrompt,
-          sketchDataUrl: sketchUrl,
-          dialogue: data.dialogue || undefined,
-        });
-
-        setActiveDialogue(data.dialogue ?? "");
-        setActiveSceneId(result.sceneId);
-        void projectQuery.refetch();
-      } catch (error) {
-        console.error("Failed to submit preview:", error);
-      } finally {
-        setIsSubmitting(false);
-      }
-    },
-    [projectId, projectQuery, submitPreviewMutation, uploadSketch]
-  );
-
-  // Phase 4: Approve draft for final Kling render
   const handleApproveForRender = useCallback(async () => {
     if (!activeSceneId) return;
-
     setIsApproving(true);
     try {
       await approveForRenderMutation.mutateAsync({ sceneId: activeSceneId });
-      // Resume polling — scene is now in UPRENDERING/GENERATING_VIDEO
       sceneStatusQuery.refetch();
-    } catch (error) {
-      console.error("Failed to approve for render:", error);
     } finally {
       setIsApproving(false);
     }
   }, [activeSceneId, approveForRenderMutation, sceneStatusQuery]);
 
-  // Auto-select the latest active scene on page load
+  const handleShare = useCallback(async () => {
+    if (!activeSceneId) return;
+    try {
+      const { shareToken } = await createShareLinkMutation.mutateAsync({ sceneId: activeSceneId });
+      await navigator.clipboard.writeText(`${window.location.origin}/share/${shareToken}`);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2500);
+    } catch {}
+  }, [activeSceneId, createShareLinkMutation]);
+
   useEffect(() => {
     if (projectQuery.data?.scenes && !activeSceneId) {
-      const activeScene = projectQuery.data.scenes.find(
+      const active = projectQuery.data.scenes.find(
         (s: ProjectScene) => s.status !== "COMPLETE" && s.status !== "FAILED"
       );
-      if (activeScene) {
-        setActiveSceneId(activeScene.id);
-      }
+      if (active) setActiveSceneId(active.id);
     }
   }, [projectQuery.data, activeSceneId]);
 
@@ -189,111 +175,181 @@ export default function StudioPage() {
   const uprenderUrl = sceneStatusQuery.data?.uprenderUrl;
   const previewVideoUrl = sceneStatusQuery.data?.previewVideoUrl;
   const previewFrameUrl = sceneStatusQuery.data?.referenceImageUrl;
-
   const stage = getSceneStage(sceneStatus);
   const canRenderFinalAction = canRenderFinal(sceneStatus);
+  const canShare = sceneStatus === "PREVIEW_READY" || sceneStatus === "COMPLETE";
+  const canGenerate = !!imageUrl && !isUploadingImage && action.trim().length > 0 && !isSubmitting;
+
+  const timelineScenes = (projectQuery.data?.scenes ?? []).map((s: ProjectScene) => ({
+    id: s.id, title: s.title, status: s.status as SceneStatus,
+    uprenderUrl: s.uprenderUrl, videoUrl: s.videoUrl, createdAt: s.createdAt,
+  }));
 
   if (projectQuery.isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-indigo-500" />
-      </div>
-    );
-  }
-
-  if (projectQuery.error) {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4">
-        <p className="text-red-400">Failed to load project</p>
-        <Button variant="outline" onClick={() => router.push("/")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to projects
-        </Button>
+        <Loader2 className="h-6 w-6 animate-spin text-[var(--accent)]" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[var(--bg)]">
-      {/* Top bar */}
-      <header className="mx-4 mt-4 flex items-center justify-between rounded-[28px] border border-white/10 bg-black/35 px-5 py-4 backdrop-blur-xl md:mx-6">
-        <Button variant="ghost" size="sm" onClick={() => router.push("/")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
+    <div className="flex min-h-screen flex-col bg-[var(--bg)]">
+      {/* Header */}
+      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-[var(--line)] bg-white/80 px-5 py-3 backdrop-blur-lg">
+        <button
+          onClick={() => router.push("/")}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm text-[var(--text-secondary)] transition hover:bg-[var(--line)] hover:text-[var(--text-primary)]"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
           Projects
-        </Button>
-        <div className="flex items-center gap-3">
-          <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3">
-            <Film className="h-5 w-5 text-[var(--accent)]" />
-          </div>
-          <div>
-            <p className="eyebrow">Studio</p>
-            <h1 className="text-lg font-semibold text-[var(--text-primary)]">
-              {projectQuery.data?.title ?? "Untitled"}
-            </h1>
-          </div>
+        </button>
+
+        <div className="flex items-center gap-2">
+          <Film className="h-4 w-4 text-[var(--accent)]" />
+          <span className="text-sm font-semibold text-[var(--text-primary)]">
+            {projectQuery.data?.title ?? "Studio"}
+          </span>
         </div>
-        <div className="hidden rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-[var(--text-secondary)] md:block">
-          Photoreal previews, identity-locked renders
+
+        <div className="flex items-center gap-2">
+          <div className="hidden items-center gap-1.5 rounded-full border border-[var(--line)] bg-white px-2.5 py-1 text-xs text-[var(--text-muted)] md:flex">
+            {gpuEnabled ? <><Zap className="h-3 w-3 text-amber-500" />GPU</> : <><Cpu className="h-3 w-3" />API</>}
+          </div>
+          {canShare && (
+            <button
+              onClick={handleShare}
+              disabled={createShareLinkMutation.isPending}
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] shadow-sm transition hover:border-[var(--accent)]/30 hover:text-[var(--accent)]"
+            >
+              {shareCopied ? <><Check className="h-3.5 w-3.5 text-green-500" />Copied!</> : <><Share2 className="h-3.5 w-3.5" />Share</>}
+            </button>
+          )}
         </div>
       </header>
 
-      {/* Main layout */}
-      <div className="flex h-[calc(100vh-105px)] gap-4 px-4 py-4 md:px-6">
-        {/* Left panel: Canvas + Character Panel + Scene Card */}
-        <div className="flex w-[60%] flex-col gap-4 overflow-y-auto rounded-[32px] border border-white/10 bg-black/20 p-6 backdrop-blur-xl">
-          <StoryboardCanvas ref={canvasRef} />
+      {/* Main — two columns */}
+      <div className="flex flex-1 gap-0 overflow-hidden">
+        {/* ---- LEFT: Input panel ---- */}
+        <div className="flex w-[380px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-[var(--line)] bg-white p-5">
 
-          {/* Character reference panel */}
-          <div className="rounded-[28px] border border-white/10 bg-white/[0.03] p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <User className="h-4 w-4 text-[var(--accent)]" />
-                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Character Identity</h3>
-              </div>
-              {characterReelStatus === "COMPLETE" && (
-                <span
-                  className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300"
-                >
-                  Refs ready
-                </span>
-              )}
-            </div>
-            <CharacterRefUpload
-              projectId={projectId}
-              initialRefUrls={characterRefUrls}
-              initialReelStatus={characterReelStatus}
+          {/* Image */}
+          <section>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+              Source Image
+            </p>
+            <DropZone
+              onImageReady={handleImageReady}
+              currentImage={imagePreview}
+              uploading={isUploadingImage}
+              compact
             />
-            <div className="border-t border-gray-700/50 pt-3">
-              <VoiceSampleUpload
-                projectId={projectId}
-                initialVoiceSampleUrl={voiceSampleUrl}
-                initialVoiceStatus={voiceStatus}
+          </section>
+
+          {/* Scene Details — structured input */}
+          <section className="space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+              Scene Details
+            </p>
+
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-medium text-[var(--text-secondary)]">Location</p>
+              <Input
+                placeholder="Rain-soaked Tokyo alley, neon-lit"
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                disabled={isSubmitting}
+                className="rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus-visible:ring-[var(--accent)]/40"
               />
             </div>
-          </div>
 
-          <SceneCard
-            onPreview={handlePreview}
-            onRenderFinal={handleApproveForRender}
-            canRenderFinal={canRenderFinalAction}
-            isSubmitting={isSubmitting}
-            isApproving={isApproving}
-          />
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-medium text-[var(--text-secondary)]">Weather / Lighting</p>
+              <Input
+                placeholder="Overcast, soft diffused daylight"
+                value={weather}
+                onChange={(e) => setWeather(e.target.value)}
+                disabled={isSubmitting}
+                className="rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus-visible:ring-[var(--accent)]/40"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-medium text-[var(--text-secondary)]">Action <span className="text-[var(--text-muted)] font-normal">— required</span></p>
+              <Textarea
+                placeholder="A woman steps into frame, pauses under flickering neon, then slowly turns toward camera"
+                value={action}
+                onChange={(e) => setAction(e.target.value)}
+                disabled={isSubmitting}
+                rows={3}
+                className="resize-none rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]/50 focus:ring-0"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-medium text-[var(--text-secondary)]">Additional <span className="text-[var(--text-muted)] font-normal">— optional</span></p>
+              <Textarea
+                placeholder="Camera language, specific lighting cues, mood, pacing, shot framing, or anything else that completes the scene…"
+                value={additional}
+                onChange={(e) => setAdditional(e.target.value)}
+                disabled={isSubmitting}
+                rows={4}
+                className="resize-none rounded-xl border-[var(--line)] bg-[var(--bg)] text-sm placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]/50 focus:ring-0"
+              />
+            </div>
+          </section>
+
+          {/* Primary CTA */}
+          <button
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] py-3 text-sm font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-40 hover:bg-[var(--accent-deep)] active:scale-[0.98]"
+          >
+            {isSubmitting ? <><Loader2 className="h-4 w-4 animate-spin" />Generating…</> : <><Plus className="h-4 w-4" />Generate Preview</>}
+          </button>
+
+          {/* Render final */}
+          {canRenderFinalAction && (
+            <button
+              onClick={handleApproveForRender}
+              disabled={isApproving}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent-light)] py-3 text-sm font-semibold text-[var(--accent)] transition disabled:opacity-50 hover:bg-[var(--accent)]/15 active:scale-[0.98]"
+            >
+              {isApproving ? <><Loader2 className="h-4 w-4 animate-spin" />Starting render…</> : <><Zap className="h-4 w-4" />Render Final Video</>}
+            </button>
+          )}
+
+          {/* Advanced accordion */}
+          <div className="rounded-xl border border-[var(--line)] bg-[var(--bg)]">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(v => !v)}
+              className="flex w-full items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]"
+            >
+              <span>Character &amp; Voice</span>
+              {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            </button>
+            {showAdvanced && (
+              <div className="border-t border-[var(--line)] px-4 pb-4 pt-3 space-y-4">
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">Character Reference</p>
+                  <CharacterRefUpload projectId={projectId} initialRefUrls={characterRefUrls} initialReelStatus={characterReelStatus} />
+                </div>
+                <div className="border-t border-[var(--line)] pt-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">Voice Sample</p>
+                  <VoiceSampleUpload projectId={projectId} initialVoiceSampleUrl={voiceSampleUrl} initialVoiceStatus={voiceStatus} />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Right panel: Status / Video */}
-        <div className="flex w-[40%] flex-col gap-6 overflow-y-auto rounded-[32px] border border-white/10 bg-black/20 p-6 backdrop-blur-xl">
-          {/* Show status board when a job is active */}
-          {activeSceneId && sceneStatus && (
-            <div className="space-y-6">
-              <JobStatusBoard
-                status={sceneStatus}
-                hasDialogue={!!activeDialogue.trim()}
-                previewFrameReady={!!previewFrameUrl}
-                stage={stage}
-              />
+        {/* ---- RIGHT: Preview + Timeline ---- */}
+        <div className="flex flex-1 flex-col overflow-y-auto bg-[var(--bg)] p-6 gap-5">
+          {activeSceneId && sceneStatus ? (
+            <>
+              <JobStatusBoard status={sceneStatus} hasDialogue={false} previewFrameReady={!!previewFrameUrl} stage={stage} />
 
-              {/* Video player — handles all draft/final states */}
               <VideoPlayer
                 videoUrl={videoUrl}
                 previewVideoUrl={previewVideoUrl}
@@ -303,94 +359,48 @@ export default function StudioPage() {
                 isApproving={isApproving}
               />
 
-              {/* Show uprendered frame only during final render stages */}
               {uprenderUrl && stage === "final" && sceneStatus === "UPRENDERING" && (
-                <div className="space-y-2">
-                  <h3 className="text-sm font-semibold text-gray-400">Start Frame</h3>
-                  <div className="overflow-hidden rounded-xl border border-gray-700">
-                    <img src={uprenderUrl} alt="Uprendered first frame" className="h-auto w-full" />
+                <div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)]">Start Frame</p>
+                  <div className="overflow-hidden rounded-2xl border border-[var(--line)] shadow-sm">
+                    <img src={uprenderUrl} alt="Uprendered frame" className="w-full" />
                   </div>
                 </div>
               )}
 
-              {/* Delete active scene */}
               {(sceneStatus === "COMPLETE" || sceneStatus === "FAILED") && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
-                  onClick={() => {
-                    if (confirm("Delete this scene? This cannot be undone.")) {
-                      deleteSceneMutation.mutate({ sceneId: activeSceneId! });
-                    }
-                  }}
+                <button
+                  onClick={() => { if (confirm("Delete this scene?")) deleteSceneMutation.mutate({ sceneId: activeSceneId! }); }}
                   disabled={deleteSceneMutation.isPending}
+                  className="flex items-center gap-1.5 self-start rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-500 transition hover:bg-red-100"
                 >
-                  <Trash2 className="mr-2 h-3.5 w-3.5" />
-                  Delete Scene
-                </Button>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete scene
+                </button>
               )}
-            </div>
-          )}
-
-          {/* Empty state */}
-          {!activeSceneId && (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-gray-600">
-              <Film className="h-12 w-12" />
-              <p className="text-center text-sm">
-                Draw your scene, fill in the details, and hit{" "}
-                <span className="text-gray-400">Preview</span> to see a draft
-                in about 30-40 seconds. Then choose whether to push it through{" "}
-                <span className="text-indigo-400">Render Final</span> for full
-                quality.
-              </p>
-            </div>
-          )}
-
-          {/* Previous scenes */}
-          {projectQuery.data?.scenes &&
-            projectQuery.data.scenes.length > 0 && (
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-400">
-                  Previous Scenes
-                </h3>
-                {projectQuery.data.scenes
-                  .filter((s: ProjectScene) => s.id !== activeSceneId)
-                  .map((scene: ProjectScene) => (
-                    <div
-                      key={scene.id}
-                      className="group relative cursor-pointer rounded-lg border border-gray-700 bg-gray-900 p-3 transition-colors hover:border-gray-600"
-                      onClick={() => setActiveSceneId(scene.id)}
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-gray-200">
-                            {scene.title}
-                          </p>
-                          <p className="text-xs text-gray-500">
-                            {scene.status} •{" "}
-                            {new Date(scene.createdAt).toLocaleTimeString()}
-                          </p>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 shrink-0 gap-1 px-2 text-red-400 hover:bg-red-500/10 hover:text-red-300"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (confirm("Delete this scene? This cannot be undone.")) {
-                              deleteSceneMutation.mutate({ sceneId: scene.id });
-                            }
-                          }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          <span className="text-xs">Delete</span>
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
+            </>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center py-20">
+              <div className="rounded-2xl border border-[var(--line)] bg-white p-6 shadow-sm">
+                <Film className="mx-auto h-8 w-8 text-[var(--text-muted)] opacity-40" />
+                <p className="mt-3 text-sm font-medium text-[var(--text-secondary)]">No scene yet</p>
+                <p className="mt-1 text-xs text-[var(--text-muted)] max-w-[220px] mx-auto leading-relaxed">
+                  Drop a photo, fill in the scene details, and click <strong>Generate Preview</strong>.
+                </p>
               </div>
-            )}
+            </div>
+          )}
+
+          {/* Timeline */}
+          {timelineScenes.length > 0 && (
+            <div className="mt-auto border-t border-[var(--line)] pt-4">
+              <SceneTimeline
+                scenes={timelineScenes}
+                activeSceneId={activeSceneId}
+                onSelect={setActiveSceneId}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

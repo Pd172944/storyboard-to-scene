@@ -1,5 +1,6 @@
 import { inngest } from "@/lib/inngest/client";
 import { prisma } from "@/lib/db";
+import { canUseFalWebhooks } from "@/lib/fal/webhooks";
 import {
   setJobState,
   deleteJobState,
@@ -20,6 +21,15 @@ export const generateScene = inngest.createFunction(
     id: "generate-scene",
     retries: 2,
     cancelOn: [{ event: "studio/scene.cancel", match: "data.sceneId" }],
+    onFailure: async ({ event, error }) => {
+      const { sceneId } = event.data.event.data as GenerateSceneEventData;
+      console.error(`[generate-scene] Failed for scene ${sceneId}:`, error);
+      await prisma.scene.update({
+        where: { id: sceneId },
+        data: { status: "FAILED" },
+      });
+      try { await deleteJobState(sceneId); } catch { /* Redis unavailable */ }
+    },
   },
   { event: "studio/scene.generate" },
   async ({ event, step }) => {
@@ -32,6 +42,7 @@ export const generateScene = inngest.createFunction(
       voiceSampleUrl,
     } = event.data as GenerateSceneEventData;
     const media = getMediaProvider();
+    const useFalWebhooks = media.backend === "fal" && canUseFalWebhooks();
 
     const now = Date.now();
     const sketchUrl = sketchDataUrl;
@@ -69,12 +80,14 @@ export const generateScene = inngest.createFunction(
           where: { id: sceneId },
           data: { status: "UPRENDERING" },
         });
-        await setJobState(sceneId, {
-          sceneId,
-          step: "uprendering",
-          startedAt: now,
-          heartbeatAt: Date.now(),
-        });
+        try {
+          await setJobState(sceneId, {
+            sceneId,
+            step: "uprendering",
+            startedAt: now,
+            heartbeatAt: Date.now(),
+          });
+        } catch { /* Redis unavailable — non-fatal, rendering continues */ }
 
         if (existing?.uprenderUrl) {
           // Frame exists — skip Flux entirely, completes in <1s
@@ -97,19 +110,19 @@ export const generateScene = inngest.createFunction(
         return url;
       }),
 
-      // 2b: Synthesize dialogue audio (skipped if no dialogue)
-      step.run("synthesize-voice", async () => {
-        if (!dialogue?.trim()) return null;
-
-        try {
-          const wavUrl = await media.synthesizeDialogue(dialogue, voiceSampleUrl);
-          return wavUrl;
-        } catch (err) {
-          // Voice failure is non-fatal — log and continue without audio
-          console.error("[synthesize-voice] Chatterbox failed:", err);
-          return null;
-        }
-      }),
+      // 2b: Synthesize dialogue audio — step only created when dialogue exists.
+      // Skipping the step entirely (not just returning null inside it) saves one
+      // Inngest HTTP round-trip on every scene without voice.
+      dialogue?.trim()
+        ? step.run("synthesize-voice", async () => {
+            try {
+              return await media.synthesizeDialogue(dialogue, voiceSampleUrl);
+            } catch (err) {
+              console.error("[synthesize-voice] Chatterbox failed:", err);
+              return null;
+            }
+          })
+        : Promise.resolve(null),
     ]);
 
     // -------------------------------------------------------------------------
@@ -117,8 +130,9 @@ export const generateScene = inngest.createFunction(
     // Voice ID is project-level — cached in Postgres and reused across scenes.
     // Returns null if no WAV was synthesized.
     // -------------------------------------------------------------------------
-    const voiceId = await step.run("create-voice-id", async () => {
-      if (!voiceWavUrl) return null;
+    // Skip the create-voice-id step entirely when there's no WAV — saves one round-trip.
+    const voiceId = voiceWavUrl
+      ? await step.run("create-voice-id", async () => {
 
       try {
         // Check if this project already has a cached Voice ID
@@ -146,13 +160,13 @@ export const generateScene = inngest.createFunction(
         console.error("[create-voice-id] Kling voice creation failed:", err);
         return null;
       }
-    });
+    }) : null;
 
     // -------------------------------------------------------------------------
-    // Step 4: Submit Kling O3 Pro R2V with character elements + optional voice ID.
-    // Poll until the video is ready.
+    // Step 4: Submit Seedance with optional voice ID.
+    // For fal.ai we wait on the completion webhook instead of polling.
     // -------------------------------------------------------------------------
-    const videoUrl = await step.run("generate-video", async () => {
+    const videoJob = await step.run("generate-video", async () => {
       await prisma.scene.update({
         where: { id: sceneId },
         data: { status: "GENERATING_VIDEO" },
@@ -165,18 +179,52 @@ export const generateScene = inngest.createFunction(
         voiceId: voiceId ?? undefined,
       });
 
-      await setJobState(sceneId, {
-        sceneId,
-        klingRequestId: job.requestId,
-        step: "generating_video",
-        startedAt: now,
-        heartbeatAt: Date.now(),
+      try {
+        await setJobState(sceneId, {
+          sceneId,
+          klingRequestId: job.requestId,
+          step: "generating_video",
+          startedAt: now,
+          heartbeatAt: Date.now(),
+        });
+      } catch { /* Redis unavailable — non-fatal */ }
+
+      return job;
+    });
+
+    let videoUrl: string;
+
+    // LTX 2.3 renders in ~20–40s — polling is fine and avoids webhook complexity.
+    // Kling takes ~90s, so the webhook path is worth it there for responsiveness.
+    const useKlingWebhook = useFalWebhooks && videoJob.model === "kling";
+
+    if (useKlingWebhook) {
+      if (!videoJob.requestId) {
+        throw new Error("Kling final video job missing requestId");
+      }
+
+      const completion = await step.waitForEvent("wait-for-kling-webhook", {
+        event: "studio/kling.finished",
+        timeout: "10m",
+        if: `event.data.klingRequestId == ${JSON.stringify(videoJob.requestId)}`,
       });
 
-      // Poll until the video is ready (up to ~10 minutes)
-      const url = await media.waitForFinalVideo(job);
-      return url;
-    });
+      if (!completion) {
+        throw new Error(
+          `Kling job ${videoJob.requestId} timed out waiting for webhook`
+        );
+      }
+
+      if (completion.data?.status !== "OK" || !completion.data.videoUrl) {
+        throw new Error(
+          completion.data?.error ?? `Kling job ${videoJob.requestId} failed`
+        );
+      }
+
+      videoUrl = completion.data.videoUrl;
+    } else {
+      videoUrl = await media.waitForFinalVideo(videoJob);
+    }
 
     // -------------------------------------------------------------------------
     // Step 5: Finalize — persist video URL to Postgres, clean up Redis
@@ -189,7 +237,7 @@ export const generateScene = inngest.createFunction(
           status: "COMPLETE",
         },
       });
-      await deleteJobState(sceneId);
+      try { await deleteJobState(sceneId); } catch { /* Redis unavailable */ }
     });
 
     return {

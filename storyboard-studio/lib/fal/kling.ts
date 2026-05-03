@@ -1,21 +1,13 @@
 import { fal } from "@/lib/fal/client";
 
-// Kling O3 Pro reference-to-video — supports `elements` for character identity
-export const KLING_MODEL_ID = "fal-ai/kling-video/o3/pro/reference-to-video";
-
-export interface KlingElement {
-  frontal_image_url: string;
-  reference_image_urls: string[];
-}
+// Kling v1.6 Pro image-to-video — broadly accessible, stable Kling generation
+export const KLING_MODEL_ID = "fal-ai/kling-video/v1.6/pro/image-to-video";
 
 export interface KlingInput {
-  start_image_url: string;
   prompt: string;
-  duration: string;
-  elements?: KlingElement[];
-  aspect_ratio?: string;
-  generate_audio?: boolean;
-  voice_id?: string;
+  image_url: string;
+  duration?: "5" | "10";
+  aspect_ratio?: "16:9" | "9:16" | "1:1";
 }
 
 interface KlingCreateVoiceOutput {
@@ -36,17 +28,23 @@ export interface KlingStatusResult {
   videoUrl?: string;
 }
 
-/**
- * Create a reusable Kling Voice ID from an audio file URL.
- *
- * The Voice ID is project-level and cached in Postgres — create it once,
- * reuse across all scenes. Pass the returned voiceId to submitKlingJob
- * to get native lip-synced audio baked into the video.
- *
- * @param audioUrl - fal CDN URL of the audio file (WAV from Chatterbox HD)
- * @param voiceName - a name to identify this voice in Kling
- * @returns The Kling voice_id string
- */
+// ---------------------------------------------------------------------------
+// Hidden system prompt — wraps every user motion prompt without exposure in
+// the UI. Tuned against the most common Kling failure modes: identity drift,
+// jittery camera, rubbery physics, and temporal texture flickering.
+// ---------------------------------------------------------------------------
+
+const KLING_PREAMBLE = `Photorealistic live-action cinema. The provided start frame is the single source of truth for lighting, color grade, depth of field, subject identity, and atmospheric feel — replicate it exactly and animate outward from it.`;
+
+const KLING_REQUIREMENTS = `Maintain throughout every frame of the clip: exact subject identity with zero facial drift or morphing, anatomically precise joint and limb movement with natural weight and momentum, realistic skin subsurface scattering and pore fidelity, natural hair dynamics with correct mass and secondary motion, fabric responding physically to movement, smooth and intentional camera motion with cinematic weight, physically accurate motion blur on fast elements, temporally stable background textures and lighting, color temperature and exposure matching the start frame.`;
+
+
+function buildKlingPrompt(motionPrompt: string): string {
+  return `${KLING_PREAMBLE} ${motionPrompt.trim()}. ${KLING_REQUIREMENTS}`;
+}
+
+// ---------------------------------------------------------------------------
+
 export async function createKlingVoice(
   audioUrl: string,
   voiceName: string
@@ -58,7 +56,6 @@ export async function createKlingVoice(
     },
   });
 
-  // fal.run() returns output directly
   const data = result as unknown as KlingCreateVoiceOutput;
 
   if (!data?.voice_id) {
@@ -70,73 +67,52 @@ export async function createKlingVoice(
   return data.voice_id;
 }
 
-/**
- * Submit an image-to-video job to Kling O3 Pro reference-to-video.
- *
- * Uses `elements` to pass character reference images directly,
- * referenced in the prompt as @Element1.
- *
- * @param imageUrl - URL of the photorealistic first frame (start_image_url)
- * @param motionPrompt - text prompt describing motion and action
- * @param characterRefUrls - optional array of character reference image URLs (1–3)
- * @param voiceId - optional Kling Voice ID for native lip-synced audio
- * @returns The request_id for tracking this job
- */
 export async function submitKlingJob(
   imageUrl: string,
   motionPrompt: string,
-  characterRefUrls?: string[],
-  voiceId?: string
+  _characterRefUrls?: string[],
+  _voiceId?: string,
+  webhookUrl?: string
 ): Promise<string> {
-  // Build elements array if character references are provided
-  let elements: KlingElement[] | undefined;
-  let prompt = motionPrompt;
+  const klingInput: KlingInput = {
+    prompt: buildKlingPrompt(motionPrompt),
+    image_url: imageUrl,
+    duration: "5",
+    aspect_ratio: "16:9",
+  };
 
-  if (characterRefUrls && characterRefUrls.length > 0) {
-    // First image is the frontal/primary reference, rest are supplementary
-    const [frontalUrl, ...restUrls] = characterRefUrls;
-    elements = [
-      {
-        frontal_image_url: frontalUrl,
-        reference_image_urls:
-          restUrls.length > 0 ? restUrls : [frontalUrl],
-      },
-    ];
-    // Prepend @Element1 to prompt so Kling uses the character identity
-    if (!prompt.includes("@Element1")) {
-      prompt = `@Element1 ${prompt}`;
+  try {
+    const { request_id } = await fal.queue.submit(KLING_MODEL_ID, {
+      input: klingInput,
+      ...(webhookUrl ? { webhookUrl } : {}),
+    });
+
+    if (!request_id) {
+      throw new Error("Kling submit did not return a request_id");
     }
+
+    return request_id;
+  } catch (err: unknown) {
+    // Use duck-typing — instanceof ValidationError breaks across Turbopack module boundaries
+    const apiErr = err as { status?: number; body?: Record<string, unknown> };
+    if (apiErr?.status === 422) {
+      const body = apiErr.body ?? {};
+      const detail = Array.isArray(body.detail)
+        ? (body.detail as Array<{ loc: (string | number)[]; msg: string }>)
+            .map((e) => `[${e.loc.join(".")}] ${e.msg}`)
+            .join("; ")
+        : "";
+      throw new Error(
+        `Kling 422 on ${KLING_MODEL_ID} — ${detail || `body: ${JSON.stringify(body)}`}`
+      );
+    }
+    throw err;
   }
-
-  const { request_id } = await fal.queue.submit(KLING_MODEL_ID, {
-    input: {
-      start_image_url: imageUrl,
-      prompt,
-      duration: "5",
-      aspect_ratio: "16:9",
-      // Enable audio when a voice ID is provided; Kling will lip-sync the character
-      generate_audio: !!voiceId,
-      ...(elements && { elements }),
-      ...(voiceId && { voice_id: voiceId }),
-    } as KlingInput,
-  });
-
-  if (!request_id) {
-    throw new Error("Kling submit did not return a request_id");
-  }
-
-  return request_id;
 }
 
 const MAX_POLL_ATTEMPTS = 120; // 10 minutes at 5s intervals
 const POLL_INTERVAL_MS = 5000;
 
-/**
- * Poll a Kling job until completion or timeout.
- *
- * @param requestId - The request_id from submitKlingJob
- * @returns The video URL
- */
 export async function waitForKlingCompletion(
   requestId: string
 ): Promise<string> {
@@ -159,12 +135,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Check the status of a Kling job.
- *
- * @param requestId - The request_id from submitKlingJob
- * @returns Normalized status and optional video URL
- */
 export async function getKlingStatus(
   requestId: string
 ): Promise<KlingStatusResult> {

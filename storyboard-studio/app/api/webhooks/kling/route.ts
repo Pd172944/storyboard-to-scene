@@ -31,17 +31,41 @@ export async function POST(req: NextRequest) {
     // fal.ai sends status "OK" on completion
     if (status === "OK" && payload?.video?.url) {
       await inngest.send({
-        name: "studio/kling.complete",
+        name: "studio/kling.finished",
         data: {
           klingRequestId: request_id,
+          status: "OK",
           videoUrl: payload.video.url,
         },
       });
     } else if (status === "ERROR" || body.error) {
-      // Optionally handle errors — the Inngest waitForEvent will timeout
+      const errorMessage = body.error ?? "Unknown error";
+
       console.error(
         `Kling webhook error for ${request_id}:`,
-        body.error ?? "Unknown error"
+        errorMessage
+      );
+
+      await inngest.send({
+        name: "studio/kling.finished",
+        data: {
+          klingRequestId: request_id,
+          status: "ERROR",
+          error: errorMessage,
+        },
+      });
+    } else {
+      await inngest.send({
+        name: "studio/kling.finished",
+        data: {
+          klingRequestId: request_id,
+          status,
+          error: body.error ?? "Kling webhook completed without a video URL",
+        },
+      });
+      console.error(
+        `Kling webhook missing video URL for ${request_id}:`,
+        body.error ?? "Missing payload.video.url"
       );
     }
 

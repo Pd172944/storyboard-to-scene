@@ -25,8 +25,8 @@ type LtxWebhookPayload = LtxWebhookPayloadSuccess | LtxWebhookPayloadError;
  * POST handler for LTX-Video completion webhook.
  * fal fires this when an LTX job completes or fails.
  *
- * On success: fire studio/ltx.complete so the waiting generate-preview
- *   workflow can resume and save the draft video URL.
+ * On success or failure: fire studio/ltx.finished so the waiting
+ * generate-preview workflow can continue without active polling.
  *
  * On error: look up the Scene by ltxRequestId, mark PREVIEW_FAILED,
  *   and fire studio/ltx.failed to unblock any waiting workflows.
@@ -47,9 +47,10 @@ export async function POST(req: NextRequest) {
 
       // Fire completion event — generate-preview workflow is waiting for this
       await inngest.send({
-        name: "studio/ltx.complete",
+        name: "studio/ltx.finished",
         data: {
           ltxRequestId: request_id,
+          status: "OK",
           videoUrl,
         },
       });
@@ -79,8 +80,12 @@ export async function POST(req: NextRequest) {
 
       // Fire failure event to unblock any waiting generate-preview workflows
       await inngest.send({
-        name: "studio/ltx.failed",
-        data: { ltxRequestId: request_id },
+        name: "studio/ltx.finished",
+        data: {
+          ltxRequestId: request_id,
+          status: "ERROR",
+          error: errorMessage,
+        },
       });
     }
 
