@@ -55,7 +55,7 @@ export default function HomePage() {
         <div className="flex items-center gap-2">
           <Film className="h-4 w-4 text-[var(--accent)]" />
           <span className="text-sm font-semibold tracking-tight text-[var(--text-primary)]">
-            Storyboard Studio
+            Framesmith
           </span>
         </div>
         <div className="flex items-center gap-5 text-sm text-[var(--text-muted)]">

@@ -34,7 +34,7 @@ export async function generateMetadata({ params }: SharePageProps) {
   }
 
   return {
-    title: `${scene.title} · Storyboard Studio`,
+    title: `${scene.title} · Framesmith`,
     description: scene.motionPrompt,
     openGraph: {
       title: scene.title,
@@ -65,7 +65,7 @@ export default async function SharePage({ params }: SharePageProps) {
       <header className="mx-4 mt-4 flex items-center justify-between rounded-[24px] border border-white/10 bg-black/40 px-5 py-3 backdrop-blur-xl">
         <div className="flex items-center gap-2">
           <Film className="h-4 w-4 text-[var(--accent)]" />
-          <span className="text-sm font-semibold text-[var(--text-primary)]">Storyboard Studio</span>
+          <span className="text-sm font-semibold text-[var(--text-primary)]">Framesmith</span>
         </div>
         <Link
           href="/"
@@ -142,13 +142,13 @@ export default async function SharePage({ params }: SharePageProps) {
               href="/"
               className="mt-5 inline-flex items-center gap-2 rounded-2xl bg-[var(--accent)] px-6 py-3 text-sm font-bold text-black transition hover:opacity-90"
             >
-              Try Storyboard Studio free
+              Try Framesmith
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
 
           <p className="text-center text-xs text-[var(--text-muted)]">
-            Generated {new Date(scene.createdAt).toLocaleDateString()} · Storyboard Studio
+            Generated {new Date(scene.createdAt).toLocaleDateString()} · Framesmith
           </p>
         </div>
       </main>
